@@ -1,5 +1,6 @@
 import asyncio
 import json
+import uuid
 from collections.abc import Generator
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,6 +12,7 @@ from .database import Base, engine, get_db
 from . import models, schemas
 from .services.context import build_chapter_context, build_story_context
 from .services.llm import DeepSeekProvider, parse_json_response
+from .services.runs import run_stream
 
 Base.metadata.create_all(bind=engine)
 
@@ -52,6 +54,56 @@ def save_outline_snapshot(db: Session, novel: models.Novel, reason: str):
 @app.get("/health")
 def health(): return {"ok": True}
 
+
+def run_or_404(run_id: str, db: Session) -> models.AgentRun:
+    item = db.get(models.AgentRun, run_id)
+    if not item: raise HTTPException(404, "运行记录不存在")
+    return item
+
+@app.get("/api/novels/{novel_id}/agent-runs", response_model=list[schemas.AgentRunRead])
+def list_agent_runs(novel_id: int, chapter_id: int | None = None, db: Session = Depends(get_db)):
+    novel_or_404(novel_id, db)
+    statement = select(models.AgentRun).where(models.AgentRun.novel_id == novel_id)
+    if chapter_id is not None: statement = statement.where(models.AgentRun.chapter_id == chapter_id)
+    return db.scalars(statement.order_by(models.AgentRun.updated_at.desc()).limit(50)).all()
+
+@app.get("/api/agent-runs/{run_id}", response_model=schemas.AgentRunRead)
+def get_agent_run(run_id: str, db: Session = Depends(get_db)): return run_or_404(run_id, db)
+
+@app.get("/api/agent-runs/{run_id}/events", response_model=list[schemas.AgentRunEventRead])
+def get_agent_run_events(run_id: str, db: Session = Depends(get_db)):
+    run_or_404(run_id, db); return db.scalars(select(models.AgentRunEvent).where(models.AgentRunEvent.run_id == run_id).order_by(models.AgentRunEvent.sequence)).all()
+
+@app.post("/api/novels/{novel_id}/agent-runs/stream")
+async def start_agent_run(novel_id: int, data: schemas.AgentRunCreate, db: Session = Depends(get_db)):
+    novel = novel_or_404(novel_id, db)
+    if data.chapter_id: scoped_or_404(models.Chapter, novel_id, data.chapter_id, db)
+    supported = {"generate_outline", "improve_outline", "plan_chapters", "suggest_outline", "improve_chapter_outline", "generate_chapter", "extract_memory", "validate_chapter"}
+    if data.task_type not in supported: raise HTTPException(422, "不支持的 Agent 任务类型")
+    run = models.AgentRun(id=str(uuid.uuid4()), novel_id=novel.id, chapter_id=data.chapter_id, task_type=data.task_type, input_snapshot=data.input, model_name=get_settings().deepseek_model, status="queued")
+    db.add(run); db.commit(); db.refresh(run)
+    return StreamingResponse(run_stream(db, novel, run), media_type="text/event-stream", headers={"Cache-Control":"no-cache", "X-Accel-Buffering":"no"})
+
+@app.post("/api/agent-runs/{run_id}/cancel")
+def cancel_agent_run(run_id: str, db: Session = Depends(get_db)):
+    run = run_or_404(run_id, db)
+    if run.status not in {"queued", "building_context", "running", "interrupted"}: raise HTTPException(409, "该运行当前不可停止")
+    run.status = "cancelled"; db.commit(); record = models.AgentRunEvent(run_id=run.id, sequence=(db.scalar(select(func.max(models.AgentRunEvent.sequence)).where(models.AgentRunEvent.run_id == run.id)) or 0)+1, event_type="status", payload={"stage":"cancelled","message":"用户停止了运行，当前草稿已保留"}); db.add(record); db.commit(); return {"id":run.id,"status":run.status,"partial_output":run.partial_output}
+
+@app.post("/api/agent-runs/{run_id}/resume/stream")
+async def resume_agent_run(run_id: str, db: Session = Depends(get_db)):
+    run = run_or_404(run_id, db); novel = novel_or_404(run.novel_id, db)
+    if run.status not in {"interrupted", "cancelled", "failed", "paused"}: raise HTTPException(409, "仅中断、暂停、失败或取消的运行可恢复")
+    if not run.partial_output and run.task_type == "generate_chapter": raise HTTPException(409, "没有可恢复的正文草稿，请重新从头生成")
+    run.status = "queued"; run.error_message = None; db.commit()
+    return StreamingResponse(run_stream(db, novel, run, resume=True), media_type="text/event-stream", headers={"Cache-Control":"no-cache", "X-Accel-Buffering":"no"})
+
+@app.get("/api/novels/{novel_id}/token-usage")
+def token_usage(novel_id: int, db: Session = Depends(get_db)):
+    novel_or_404(novel_id, db)
+    rows = db.scalars(select(models.TokenUsage).where(models.TokenUsage.novel_id == novel_id)).all()
+    return {"runs": len(rows), "input_tokens_estimated": sum(x.input_tokens_estimated for x in rows), "output_tokens": sum(x.output_tokens_actual or 0 for x in rows), "total_tokens": sum(x.total_tokens or 0 for x in rows), "compressed_runs": sum(1 for x in rows if x.compressed)}
+
 @app.get("/api/novels", response_model=list[schemas.NovelRead])
 def list_novels(db: Session = Depends(get_db)):
     return db.scalars(select(models.Novel).order_by(models.Novel.updated_at.desc())).all()
@@ -72,7 +124,11 @@ def update_novel(novel_id: int, data: schemas.NovelUpdate, db: Session = Depends
 @app.delete("/api/novels/{novel_id}", status_code=204)
 def delete_novel(novel_id: int, db: Session = Depends(get_db)):
     novel_or_404(novel_id, db)
-    for model in (models.OutlineNode, models.ChapterSummary, models.TimelineEvent, models.CanonFact, models.Character, models.GenerationJob, models.OutlineRevision, models.Chapter): db.query(model).filter(model.novel_id == novel_id).delete()
+    run_ids = [x for x in db.scalars(select(models.AgentRun.id).where(models.AgentRun.novel_id == novel_id)).all()]
+    if run_ids:
+        db.query(models.AgentRunEvent).filter(models.AgentRunEvent.run_id.in_(run_ids)).delete(synchronize_session=False)
+        db.query(models.ContextSnapshot).filter(models.ContextSnapshot.run_id.in_(run_ids)).delete(synchronize_session=False)
+    for model in (models.TokenUsage, models.AgentRun, models.OutlineNode, models.ChapterSummary, models.TimelineEvent, models.CanonFact, models.Character, models.GenerationJob, models.OutlineRevision, models.Chapter): db.query(model).filter(model.novel_id == novel_id).delete()
     db.query(models.Novel).filter(models.Novel.id == novel_id).delete(); db.commit()
 
 @app.get("/api/novels/{novel_id}/workspace")
@@ -115,6 +171,12 @@ def delete_chapter(novel_id: int, chapter_id: int, db: Session = Depends(get_db)
     db.query(models.TimelineEvent).filter_by(novel_id=novel_id, source_chapter_id=chapter_id).delete()
     db.query(models.CanonFact).filter_by(novel_id=novel_id, source_chapter_id=chapter_id).delete()
     db.query(models.GenerationJob).filter_by(novel_id=novel_id, chapter_id=chapter_id).delete()
+    run_ids = [x for x in db.scalars(select(models.AgentRun.id).where(models.AgentRun.novel_id == novel_id, models.AgentRun.chapter_id == chapter_id)).all()]
+    if run_ids:
+        db.query(models.AgentRunEvent).filter(models.AgentRunEvent.run_id.in_(run_ids)).delete(synchronize_session=False)
+        db.query(models.ContextSnapshot).filter(models.ContextSnapshot.run_id.in_(run_ids)).delete(synchronize_session=False)
+    db.query(models.TokenUsage).filter_by(novel_id=novel_id, chapter_id=chapter_id).delete()
+    db.query(models.AgentRun).filter_by(novel_id=novel_id, chapter_id=chapter_id).delete()
     db.delete(chapter); db.flush()
     remaining = db.scalars(select(models.Chapter).where(models.Chapter.novel_id == novel_id).order_by(models.Chapter.sequence, models.Chapter.id)).all()
     for sequence, item in enumerate(remaining, 1): item.sequence = sequence
@@ -260,11 +322,14 @@ async def validate_chapter(novel_id: int, chapter_id: int, db: Session = Depends
     return response["result"]
 
 @app.post("/api/novels/{novel_id}/chapters/{chapter_id}/confirm")
-async def confirm_chapter(novel_id: int, chapter_id: int, db: Session = Depends(get_db)):
+async def confirm_chapter(novel_id: int, chapter_id: int, payload: dict | None = None, db: Session = Depends(get_db)):
     novel = novel_or_404(novel_id, db); chapter = scoped_or_404(models.Chapter, novel_id, chapter_id, db); chapter.status = "confirmed"; db.commit()
     prompt = f"提取以下章节的结构化记忆，供用户确认后成为设定。章节：{chapter.content}\n返回 {{\"summary\":\"...\",\"key_events\":[\"...\"],\"foreshadowing\":[\"...\"],\"unresolved_conflicts\":[\"...\"],\"timeline_events\":[{{\"time_description\":\"\",\"location\":\"\",\"content\":\"\",\"participants\":\"\"}}],\"facts\":[{{\"fact_type\":\"character_state|relationship|world|plot\",\"content\":\"...\"}}]}}。"
-    response = await json_job(db, novel, "extract_memory", prompt, chapter.id)
-    data = response["result"]
+    if payload and isinstance(payload.get("extracted"), dict):
+        data = payload["extracted"]
+    else:
+        response = await json_job(db, novel, "extract_memory", prompt, chapter.id)
+        data = response["result"]
     old = db.scalar(select(models.ChapterSummary).where(models.ChapterSummary.chapter_id == chapter_id))
     if old: db.delete(old)
     db.add(models.ChapterSummary(novel_id=novel_id, chapter_id=chapter_id, summary=data.get("summary", ""), key_events="\n".join(data.get("key_events", [])), foreshadowing="\n".join(data.get("foreshadowing", [])), unresolved_conflicts="\n".join(data.get("unresolved_conflicts", []))))

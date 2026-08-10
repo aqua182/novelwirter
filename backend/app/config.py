@@ -8,6 +8,8 @@ class Settings(BaseSettings):
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_model: str = "deepseek-chat"
     cors_origins: str = "http://localhost:5173"
+    context_token_budget: int = 20000
+    context_warning_threshold: float = 0.7
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property
@@ -18,4 +20,3 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
-

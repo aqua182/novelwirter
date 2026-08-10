@@ -13,6 +13,8 @@
 - 结构化记忆：确认章节时生成摘要、事件与事实草稿；仅确认的人物、时间线与事实会作为后续创作的强约束。
 - 校验 Agent：检查时间线、人物/地点/关系、设定及大纲偏离，只返回问题和建议，不改写正文。
 - 安全删除：书架可删除小说；章节列表和编辑器可删除章节。两者均有确认提示，章节删除会清理直接关联数据并重排后续章节。
+- 可恢复 Agent 运行：生成大纲、改进大纲、章节建议、章节正文和校验通过统一 SSE 流发送执行进度、上下文构成、压缩警告与最终结果。页面刷新或中断后可查看运行记录，并从保留的正文草稿继续生成。
+- Token 可观测性：每次可恢复运行会记录上下文预算、估算 Token、输出 Token 与压缩状态。界面显示当前上下文构成和安全提示。
 - 后端 AI Provider 独立封装，DeepSeek 密钥只由后端 `.env` 读取。
 
 ## 启动
@@ -67,6 +69,7 @@ DATABASE_URL=postgresql+psycopg://user:password@localhost/novelwriter
 5. 点击“生成章节”查看流式草稿；保存修改后的正文。
 6. 点击“确认章节”，系统会提取摘要、时间线与事实草稿。通过 API 可编辑、确认或忽略这些条目。
 7. 点击“校验章节”查看结构化矛盾提示和修改建议。
+8. 生成期间，右侧的“Agent 运行”面板会显示安全的执行进度、上下文构成及压缩记录；可停止并保留草稿。刷新页面后，如运行被中断，可点击“从中断处恢复”。
 
 ## API 概览
 
@@ -76,6 +79,13 @@ DATABASE_URL=postgresql+psycopg://user:password@localhost/novelwriter
 - `/api/novels/{novel_id}/ai/outline`、`/ai/plan-chapters`：仅返回可编辑 AI 提案；`/ai/apply-plan` 才持久化章节。
 - `/api/novels/{novel_id}/ai/improve-outline`：返回大纲改进预览；`/ai/apply-outline-improvement` 选择性应用，确认章节自动跳过。
 - `/api/novels/{novel_id}/outline-revisions`：大纲快照与恢复。
+- `/api/novels/{novel_id}/agent-runs/stream`：统一 SSE Agent 运行入口。请求体包含 `task_type`、可选 `chapter_id` 和 `input`。
+- `/api/agent-runs/{run_id}`、`/events`、`/resume/stream`、`/cancel`：运行记录、进度审计、恢复和停止。
+- `/api/novels/{novel_id}/token-usage`：小说级 Token 使用汇总。
+
+## 可恢复运行与上下文压缩
+
+Agent 运行记录仅保存用户可解释的状态、工具步骤、上下文摘要、警告和最终结果，不展示模型私有推理。运行前按优先级组装：已确认主角与世界观、当前状态与时间线、当前要求、最近章节和相关摘要。接近 `CONTEXT_TOKEN_BUDGET` 时，会提示并优先将低相关度历史正文替换为摘要；原始正文不会被改写或删除。
 - `/api/novels/{novel_id}/chapters/{chapter_id}/ai/generate`：SSE 流式正文。
 - `/api/novels/{novel_id}/chapters/{chapter_id}/ai/validate`：结构化编审结果。
 

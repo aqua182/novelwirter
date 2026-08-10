@@ -66,6 +66,13 @@ class ApplyOutlineImprovementRequest(BaseModel):
     chapters: list[dict] = Field(default_factory=list)
     apply_chapter_numbers: list[int] | None = None
 class OutlineRevisionRead(ORMModel): id: int; novel_id: int; content: str; reason: str; created_at: datetime
+class AgentRunCreate(BaseModel):
+    task_type: str
+    chapter_id: int | None = None
+    input: dict = Field(default_factory=dict)
+class AgentRunRead(ORMModel):
+    id: str; novel_id: int; chapter_id: int | None; task_type: str; status: str; input_snapshot: dict; context_snapshot_id: str | None; partial_output: str; result: dict | None; error_message: str | None; model_name: str; created_at: datetime; updated_at: datetime; completed_at: datetime | None
+class AgentRunEventRead(ORMModel): id: int; run_id: str; sequence: int; event_type: str; payload: dict; created_at: datetime
 class PlanChaptersRequest(BaseModel): requirements: str = ""; chapter_count: int = Field(ge=1, le=200); chapter_words: int = Field(default=3000, ge=100); style: str = ""
 class GenerateChapterRequest(BaseModel): style_hint: str = ""; target_words: int | None = None
 class Issue(BaseModel): type: str; severity: str; description: str; suggestion: str

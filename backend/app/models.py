@@ -120,3 +120,64 @@ class OutlineRevision(Base):
     content: Mapped[str] = mapped_column(Text, default="")
     reason: Mapped[str] = mapped_column(String(100), default="manual_save")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AgentRun(Timestamped, Base):
+    __tablename__ = "agent_runs"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    novel_id: Mapped[int] = mapped_column(ForeignKey("novels.id"), index=True)
+    chapter_id: Mapped[int | None] = mapped_column(ForeignKey("chapters.id"), nullable=True, index=True)
+    task_type: Mapped[str] = mapped_column(String(50), index=True)
+    status: Mapped[str] = mapped_column(String(30), default="queued", index=True)
+    input_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    context_snapshot_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    partial_output: Mapped[str] = mapped_column(Text, default="")
+    result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    model_name: Mapped[str] = mapped_column(String(100))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AgentRunEvent(Base):
+    __tablename__ = "agent_run_events"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("agent_runs.id"), index=True)
+    sequence: Mapped[int] = mapped_column(Integer)
+    event_type: Mapped[str] = mapped_column(String(30))
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ContextSnapshot(Base):
+    __tablename__ = "context_snapshots"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    novel_id: Mapped[int] = mapped_column(ForeignKey("novels.id"), index=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("agent_runs.id"), unique=True)
+    summary: Mapped[str] = mapped_column(Text, default="")
+    confirmed_canon_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    character_state_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    timeline_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    unresolved_plot_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    recent_chapter_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    retrieval_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    estimated_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    compression_level: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class TokenUsage(Base):
+    __tablename__ = "token_usages"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    novel_id: Mapped[int] = mapped_column(ForeignKey("novels.id"), index=True)
+    chapter_id: Mapped[int | None] = mapped_column(ForeignKey("chapters.id"), nullable=True)
+    run_id: Mapped[str | None] = mapped_column(ForeignKey("agent_runs.id"), nullable=True, index=True)
+    task_type: Mapped[str] = mapped_column(String(50))
+    model_name: Mapped[str] = mapped_column(String(100))
+    input_tokens_estimated: Mapped[int] = mapped_column(Integer, default=0)
+    input_tokens_actual: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens_actual: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    context_budget: Mapped[int] = mapped_column(Integer, default=20000)
+    compressed: Mapped[bool] = mapped_column(Boolean, default=False)
+    compressed_token_savings: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

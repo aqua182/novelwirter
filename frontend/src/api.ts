@@ -22,3 +22,12 @@ export async function streamChapter(path:string, payload:unknown, onDelta:(x:str
     if(done) break
   }
 }
+
+export type AgentEvent = {run_id:string;event_type:'status'|'content_delta'|'tool'|'context'|'token'|'warning'|'result'|'error'|'done';timestamp:string;data:any}
+export async function streamAgentRun(path:string, payload:unknown, onEvent:(event:AgentEvent)=>void, signal?:AbortSignal) {
+  const r=await fetch(`${API}${path}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal})
+  if(!r.ok){const d=await r.json().catch(()=>null);throw new Error(d?.detail||'Agent 运行请求失败')}
+  const reader=r.body?.getReader();if(!reader)throw new Error('浏览器不支持流式响应')
+  const decoder=new TextDecoder();let buffer=''
+  while(true){const {value,done}=await reader.read();buffer+=decoder.decode(value||new Uint8Array(),{stream:!done});const blocks=buffer.split('\n\n');buffer=blocks.pop()||'';for(const block of blocks){const line=block.split('\n').find(x=>x.startsWith('data: '));if(line)onEvent(JSON.parse(line.slice(6)))}if(done)break}
+}
