@@ -520,9 +520,20 @@ async def confirm_chapter(novel_id: int, chapter_id: int, payload: dict | None =
             models.CanonFact.source_chapter_id == chapter_id,
             models.CanonFact.status == "obsolete",
         ).delete(synchronize_session=False)
+    # ChapterSummary is one-to-one with its chapter. Updating it in place avoids a
+    # delete/insert ordering conflict with the database's unique chapter_id index.
     old = db.scalar(select(models.ChapterSummary).where(models.ChapterSummary.chapter_id == chapter_id))
-    if old: db.delete(old)
-    db.add(models.ChapterSummary(novel_id=novel_id, chapter_id=chapter_id, summary=str(data.get("summary", "")), key_events=joined(data.get("key_events")), foreshadowing=joined(data.get("foreshadowing")), unresolved_conflicts=joined(data.get("unresolved_conflicts"))))
+    summary_values = {
+        "summary": str(data.get("summary", "")),
+        "key_events": joined(data.get("key_events")),
+        "foreshadowing": joined(data.get("foreshadowing")),
+        "unresolved_conflicts": joined(data.get("unresolved_conflicts")),
+        "is_stale": False,
+    }
+    if old:
+        update_entity(old, summary_values)
+    else:
+        db.add(models.ChapterSummary(novel_id=novel_id, chapter_id=chapter_id, **summary_values))
     for item in entries(data.get("timeline_events")):
         fields = {k: str(item.get(k, "")) for k in ("time_description","location","content","participants")} if isinstance(item, dict) else {"time_description":"", "location":"", "content":str(item), "participants":""}
         if fields["content"]: db.add(models.TimelineEvent(novel_id=novel_id, source_chapter_id=chapter_id, confirmed=False, **fields))
