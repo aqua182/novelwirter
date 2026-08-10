@@ -26,10 +26,14 @@ def requested_chapter_count(payload: dict) -> int | None:
     match = re.search(r"(?:预计|预期|计划|规划|扩展为|总计|共)\s*(\d{1,3})\s*章", text)
     return int(match.group(1)) if match and 1 <= int(match.group(1)) <= 200 else None
 
-def chapter_length_instruction(count: int | None) -> str:
-    if not count: return "每章大纲应简洁、具体。"
-    limit = 55 if count >= 80 else 85 if count >= 40 else 160
-    return f"为避免长篇规划被输出长度截断，每章 outline 最多 {limit} 个汉字，只写关键转折、冲突与推进；后续可逐章展开。"
+def chapter_length_instruction(count: int | None, requested_limit: object = None) -> str:
+    try:
+        limit = int(requested_limit)
+        if not 30 <= limit <= 400: raise ValueError
+    except (TypeError, ValueError):
+        if not count: return "每章大纲应简洁、具体。"
+        limit = 55 if count >= 80 else 85 if count >= 40 else 160
+    return f"每章 outline 最多 {limit} 个汉字，只写关键转折、冲突与推进；后续可逐章展开。"
 
 def annotate_outline_count(run: models.AgentRun, result: dict):
     expected = requested_chapter_count(run.input_snapshot)
@@ -62,14 +66,14 @@ def task_prompt(db: Session, novel: models.Novel, run: models.AgentRun) -> tuple
         return context, f"第{chapter.sequence}章《{chapter.title}》现有大纲：{chapter.outline}\n用户改进要求：{payload.get('improvement_request','')}。不能直接覆盖数据库。返回 {{\"change_summary\":\"...\",\"reasoning_summary\":\"...\",\"warnings\":[\"...\"],\"title\":\"...\",\"outline\":\"...\"}}。", True
     if task == "generate_outline":
         count = requested_chapter_count(payload) or 12
-        return context, f"为《{novel.title}》生成可编辑总纲和章节规划。题材：{payload.get('genre') or novel.genre}；主旨：{payload.get('theme') or novel.theme}；目标字数：{payload.get('target_words') or novel.target_words}；目标章节数：{count}；文风：{payload.get('style') or novel.default_style}。主要主角是最高优先级约束。必须返回恰好 {count} 个 chapters，sequence 从 1 连续到 {count}，不得宣称生成了未包含的章节。{chapter_length_instruction(count)} 返回 {{\"master_outline\":\"...\",\"chapters\":[{{\"sequence\":1,\"title\":\"...\",\"outline\":\"...\"}}]}}。", True
+        return context, f"为《{novel.title}》生成可编辑总纲和章节规划。题材：{payload.get('genre') or novel.genre}；主旨：{payload.get('theme') or novel.theme}；目标字数：{payload.get('target_words') or novel.target_words}；目标章节数：{count}；文风：{payload.get('style') or novel.default_style}。主要主角是最高优先级约束。必须返回恰好 {count} 个 chapters，sequence 从 1 连续到 {count}，不得宣称生成了未包含的章节。{chapter_length_instruction(count, payload.get('outline_max_chars'))} 返回 {{\"master_outline\":\"...\",\"chapters\":[{{\"sequence\":1,\"title\":\"...\",\"outline\":\"...\"}}]}}。", True
     if task == "improve_outline":
         if not novel.master_outline or not novel.master_outline.strip():
             raise ValueError("当前总纲为空，无法生成可靠的改进建议。请先保存总纲或恢复一个非空历史版本。")
         chapters = db.scalars(select(models.Chapter).where(models.Chapter.novel_id == novel.id).order_by(models.Chapter.sequence)).all()
         known = "\n".join(f"第{c.sequence}章《{c.title}》[{c.status}]：{c.outline}；已有正文：{'是' if c.content else '否'}" for c in chapters)
         count = requested_chapter_count(payload)
-        count_requirement = f"目标共 {count} 章：必须返回恰好 {count} 个章节，chapter_number 从 1 连续到 {count}，不得在说明中声称生成了未包含的章节。{chapter_length_instruction(count)}" if count else "章节数量以当前规划为准；不得在说明中声称生成了未包含的章节。"
+        count_requirement = f"目标共 {count} 章：必须返回恰好 {count} 个章节，chapter_number 从 1 连续到 {count}，不得在说明中声称生成了未包含的章节。{chapter_length_instruction(count, payload.get('outline_max_chars'))}" if count else "章节数量以当前规划为准；不得在说明中声称生成了未包含的章节。"
         return context, f"【必须保留并基于的当前总纲】\n{novel.master_outline}\n【当前总纲结束】\n已有章节：{known}\n用户改进要求：{payload.get('improvement_request','')}。{count_requirement}\n只能在当前总纲基础上做有针对性的增补或调整：保留已写明的人物、事件顺序、篇章结构和结局；不要用泛化的犯罪/爱情套路替换既有剧情。change_summary 与 reasoning_summary 必须点出具体保留或调整的现有情节。已确认章节和已有正文是既成事实，默认只调整后续草稿章节。返回 {{\"change_summary\":\"...\",\"reasoning_summary\":\"...\",\"affected_chapters\":[1],\"warnings\":[\"...\"],\"outline\":{{\"content\":\"改进后的完整总纲\",\"chapters\":[{{\"chapter_number\":1,\"title\":\"...\",\"outline\":\"...\",\"change_type\":\"modified\"}}]}}}}。", True
     if task == "plan_chapters":
         return context, f"基于总纲规划 {payload.get('chapter_count',12)} 个可编辑章节。要求：{payload.get('requirements','')}；单章目标：{payload.get('chapter_words',3000)}。返回 {{\"chapters\":[{{\"sequence\":1,\"title\":\"...\",\"outline\":\"...\"}}]}}。", True
