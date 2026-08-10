@@ -1,3 +1,5 @@
+import re
+
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 from ..models import Novel, Chapter, Character, TimelineEvent, CanonFact, ChapterSummary
@@ -5,6 +7,24 @@ from ..models import Novel, Chapter, Character, TimelineEvent, CanonFact, Chapte
 
 def _compact(items: list[str], limit: int = 12) -> str:
     return "\n".join(f"- {x}" for x in items[:limit] if x)
+
+
+def _timeline_has_happened(event: TimelineEvent, before_sequence: int | None) -> bool:
+    """Keep outline-derived range events out of an earlier chapter's context.
+
+    Story-plan events intentionally have no source chapter because they are
+    editable plan records. Once confirmed, a range such as ``第93–100章``
+    must still not leak into chapter 2 merely because it has no source ID.
+    Free-form global timeline facts remain visible when no chapter range is
+    present.
+    """
+    if before_sequence is None or event.source_chapter_id is not None:
+        return True
+    match = re.search(r"第\s*(\d+)\s*(?:章)?\s*(?:[-–—~至到]\s*(\d+)\s*章?)?", event.time_description or "")
+    if not match:
+        return True
+    last_chapter = int(match.group(2) or match.group(1))
+    return last_chapter < before_sequence
 
 
 def build_story_context(db: Session, novel: Novel, include_writing_style: bool = False, before_sequence: int | None = None) -> str:
@@ -17,7 +37,7 @@ def build_story_context(db: Session, novel: Novel, include_writing_style: bool =
         # must never leak future plot into an earlier chapter's writing context.
         event_query = event_query.where(or_(TimelineEvent.source_chapter_id.is_(None), TimelineEvent.source_chapter_id.in_(previous_chapter_ids)))
         fact_query = fact_query.where(or_(CanonFact.source_chapter_id.is_(None), CanonFact.source_chapter_id.in_(previous_chapter_ids)))
-    confirmed_events = db.scalars(event_query).all()
+    confirmed_events = [event for event in db.scalars(event_query).all() if _timeline_has_happened(event, before_sequence)]
     confirmed_facts = db.scalars(fact_query).all()
     mains = [c for c in confirmed_characters if c.is_main_character]
     chars = _compact([f"{c.name}：设定：{c.profile}；外貌：{c.appearance}；目标：{c.current_goal or c.goal}；性格：{c.personality}；关系：{c.relationships}；当前位置：{c.current_location}；当前状态/情绪：{c.current_emotion_or_state or c.current_status}；成长弧：{c.arc_or_growth}" for c in mains], 8)
