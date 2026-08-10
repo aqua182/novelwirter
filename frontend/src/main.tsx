@@ -6,4 +6,6 @@ import './fixes.css'
 import './iteration.css'
 import './runs.css'
 import './models.css'
+import './ui-refactor.css'
+import './ui-hotfix.css'
 createRoot(document.getElementById('root')!).render(<StrictMode><App /></StrictMode>)
