@@ -1,9 +1,9 @@
 export const API = import.meta.env.VITE_API_URL || 'http://localhost:8000/api'
 export type Novel = { id:number; title:string; genre?:string; theme?:string; target_words?:number; default_style?:string; master_outline?:string; default_writing_model_config_id?:string; default_outline_model_config_id?:string; default_review_model_config_id?:string; writing_temperature_override?:number; outline_temperature_override?:number; review_temperature_override?:number }
-export type Chapter = { id:number; novel_id:number; sequence:number; title:string; outline:string; content:string; writing_requirements:string; target_words?:number; actual_words:number; status:string }
+export type Chapter = { id:number; novel_id:number; sequence:number; title:string; outline:string; content:string; writing_requirements:string; target_words?:number; actual_words:number; status:string; memory_stale:boolean }
 export type Character = { id:number; name:string; profile:string; appearance:string; current_status:string; confirmed:boolean; goal:string; personality:string; relationships:string; is_main_character:boolean; importance:number; current_location:string; current_goal:string; current_emotion_or_state:string; arc_or_growth:string; status:string }
 export type Fact = { id:number; fact_type:string; content:string; status:string; source_chapter_id?:number }
-export type Timeline = { id:number; time_description:string; location:string; content:string; participants:string; confirmed:boolean }
+export type Timeline = { id:number; time_description:string; location:string; content:string; participants:string; confirmed:boolean; is_stale:boolean }
 export type ModelConfig = {id:string;display_name:string;provider_type:string;api_base_url:string;api_key_masked:string;model_id:string;default_temperature:number;max_output_tokens?:number;enabled:boolean;is_default:boolean;supported_tasks:string[];last_tested_at?:string;last_test_status?:string;last_test_message?:string}
 
 export async function request<T>(path:string, options:RequestInit = {}):Promise<T> {

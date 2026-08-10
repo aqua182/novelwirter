@@ -50,6 +50,9 @@ class Chapter(Timestamped, Base):
     target_words: Mapped[int | None] = mapped_column(Integer, nullable=True)
     actual_words: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(20), default="draft")
+    # "changed_pending_confirmation" means the text changed after confirmation.
+    # Its extracted memory remains available for comparison, but is no longer current.
+    memory_stale: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class Character(Timestamped, Base):
@@ -83,6 +86,7 @@ class TimelineEvent(Timestamped, Base):
     participants: Mapped[str] = mapped_column(Text, default="")
     source_chapter_id: Mapped[int | None] = mapped_column(ForeignKey("chapters.id"), nullable=True)
     confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_stale: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class ChapterSummary(Timestamped, Base):
@@ -94,6 +98,7 @@ class ChapterSummary(Timestamped, Base):
     key_events: Mapped[str] = mapped_column(Text, default="")
     foreshadowing: Mapped[str] = mapped_column(Text, default="")
     unresolved_conflicts: Mapped[str] = mapped_column(Text, default="")
+    is_stale: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class CanonFact(Timestamped, Base):

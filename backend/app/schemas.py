@@ -37,7 +37,7 @@ class ChapterBase(BaseModel):
 class ChapterCreate(ChapterBase): pass
 class ChapterUpdate(ChapterBase):
     sequence: int | None = None; title: str | None = None; outline: str | None = None; content: str | None = None; writing_requirements: str | None = None; target_words: int | None = None; status: str | None = None
-class ChapterRead(ChapterBase, ORMModel): id: int; novel_id: int; actual_words: int; created_at: datetime; updated_at: datetime
+class ChapterRead(ChapterBase, ORMModel): id: int; novel_id: int; actual_words: int; memory_stale: bool; created_at: datetime; updated_at: datetime
 
 
 class CharacterBase(BaseModel):
@@ -51,7 +51,7 @@ class TimelineBase(BaseModel):
     time_description: str = ""; location: str = ""; content: str; participants: str = ""; source_chapter_id: int | None = None; confirmed: bool = False
 class TimelineCreate(TimelineBase): pass
 class TimelineUpdate(TimelineBase): content: str | None = None
-class TimelineRead(TimelineBase, ORMModel): id: int; novel_id: int
+class TimelineRead(TimelineBase, ORMModel): id: int; novel_id: int; is_stale: bool
 
 class FactBase(BaseModel):
     fact_type: str = "world"; content: str; source_chapter_id: int | None = None; status: str = "draft"

@@ -29,6 +29,9 @@ def run_lightweight_migrations():
             if name not in existing: conn.execute(text(f"ALTER TABLE characters ADD COLUMN {name} {definition}"))
         table_additions = {
             "novels": {"default_writing_model_config_id":"VARCHAR(36)","default_outline_model_config_id":"VARCHAR(36)","default_review_model_config_id":"VARCHAR(36)","writing_temperature_override":"FLOAT","outline_temperature_override":"FLOAT","review_temperature_override":"FLOAT"},
+            "chapters": {"memory_stale": "BOOLEAN DEFAULT 0"},
+            "chapter_summaries": {"is_stale": "BOOLEAN DEFAULT 0"},
+            "timeline_events": {"is_stale": "BOOLEAN DEFAULT 0"},
             "agent_runs": {"model_config_id":"VARCHAR(36)","provider_type":"VARCHAR(50) DEFAULT 'deepseek'","api_base_url_label":"VARCHAR(255) DEFAULT ''","temperature":"FLOAT DEFAULT 0.7","max_output_tokens":"INTEGER"},
         }
         existing_tables=set(inspector.get_table_names())
@@ -226,7 +229,21 @@ def get_chapter(novel_id: int, chapter_id: int, db: Session = Depends(get_db)): 
 
 @app.patch("/api/novels/{novel_id}/chapters/{chapter_id}", response_model=schemas.ChapterRead)
 def update_chapter(novel_id: int, chapter_id: int, data: schemas.ChapterUpdate, db: Session = Depends(get_db)):
-    item = scoped_or_404(models.Chapter, novel_id, chapter_id, db); values = data.model_dump(exclude_unset=True); update_entity(item, values); item.actual_words = word_count(item.content); db.commit(); db.refresh(item); return item
+    item = scoped_or_404(models.Chapter, novel_id, chapter_id, db)
+    values = data.model_dump(exclude_unset=True)
+    content_changed = "content" in values and values["content"] != item.content
+    was_confirmed = item.status == "confirmed"
+    update_entity(item, values)
+    if was_confirmed and content_changed:
+        # Never silently erase confirmed canon.  Only generated drafts become stale
+        # and can later be deliberately replaced after the user reviews a preview.
+        item.status = "changed_pending_confirmation"
+        item.memory_stale = True
+        db.query(models.ChapterSummary).filter_by(novel_id=novel_id, chapter_id=chapter_id).update({"is_stale": True})
+        db.query(models.TimelineEvent).filter_by(novel_id=novel_id, source_chapter_id=chapter_id, confirmed=False).update({"is_stale": True})
+        db.query(models.CanonFact).filter_by(novel_id=novel_id, source_chapter_id=chapter_id, status="draft").update({"status": "obsolete"})
+    item.actual_words = word_count(item.content)
+    db.commit(); db.refresh(item); return item
 
 @app.delete("/api/novels/{novel_id}/chapters/{chapter_id}")
 def delete_chapter(novel_id: int, chapter_id: int, db: Session = Depends(get_db)):
@@ -438,6 +455,60 @@ async def confirm_chapter(novel_id: int, chapter_id: int, payload: dict | None =
     if not isinstance(data, dict): raise HTTPException(502, "记忆提取结果格式不正确，请重试")
     def entries(value): return value if isinstance(value, list) else []
     def joined(value): return "\n".join(str(item) for item in entries(value))
+    mode = str((payload or {}).get("mode", "apply"))
+    if mode not in {"preview", "apply"}: raise HTTPException(422, "不支持的记忆确认模式")
+
+    stale_timeline = db.scalars(select(models.TimelineEvent).where(
+        models.TimelineEvent.novel_id == novel_id,
+        models.TimelineEvent.source_chapter_id == chapter_id,
+        models.TimelineEvent.confirmed.is_(False),
+        models.TimelineEvent.is_stale.is_(True),
+    )).all()
+    stale_facts = db.scalars(select(models.CanonFact).where(
+        models.CanonFact.novel_id == novel_id,
+        models.CanonFact.source_chapter_id == chapter_id,
+        models.CanonFact.status == "obsolete",
+    )).all()
+    confirmed_timeline_count = db.scalar(select(func.count()).select_from(models.TimelineEvent).where(
+        models.TimelineEvent.novel_id == novel_id,
+        models.TimelineEvent.source_chapter_id == chapter_id,
+        models.TimelineEvent.confirmed.is_(True),
+    )) or 0
+    confirmed_fact_count = db.scalar(select(func.count()).select_from(models.CanonFact).where(
+        models.CanonFact.novel_id == novel_id,
+        models.CanonFact.source_chapter_id == chapter_id,
+        models.CanonFact.status == "confirmed",
+    )) or 0
+    if mode == "preview":
+        return {
+            "chapter_id": chapter_id,
+            "status": "memory_preview",
+            "extracted": data,
+            "old": {
+                "summary_stale": bool(db.scalar(select(models.ChapterSummary).where(models.ChapterSummary.chapter_id == chapter_id, models.ChapterSummary.is_stale.is_(True)))),
+                "draft_timeline": [{"id": x.id, "content": x.content, "time_description": x.time_description, "location": x.location} for x in stale_timeline],
+                "draft_facts": [{"id": x.id, "fact_type": x.fact_type, "content": x.content} for x in stale_facts],
+                "confirmed_timeline_count": confirmed_timeline_count,
+                "confirmed_fact_count": confirmed_fact_count,
+            },
+            "new": {"timeline_count": len(entries(data.get("timeline_events"))), "fact_count": len(entries(data.get("facts")))},
+            "message": "旧草稿记忆已标为过期。已确认时间线和事实不会被自动删除。",
+        }
+
+    replace_stale_drafts = bool((payload or {}).get("replace_stale_drafts", True))
+    if replace_stale_drafts:
+        # Only stale drafts are safe to remove automatically. Confirmed memory is kept.
+        db.query(models.TimelineEvent).filter(
+            models.TimelineEvent.novel_id == novel_id,
+            models.TimelineEvent.source_chapter_id == chapter_id,
+            models.TimelineEvent.confirmed.is_(False),
+            models.TimelineEvent.is_stale.is_(True),
+        ).delete(synchronize_session=False)
+        db.query(models.CanonFact).filter(
+            models.CanonFact.novel_id == novel_id,
+            models.CanonFact.source_chapter_id == chapter_id,
+            models.CanonFact.status == "obsolete",
+        ).delete(synchronize_session=False)
     old = db.scalar(select(models.ChapterSummary).where(models.ChapterSummary.chapter_id == chapter_id))
     if old: db.delete(old)
     db.add(models.ChapterSummary(novel_id=novel_id, chapter_id=chapter_id, summary=str(data.get("summary", "")), key_events=joined(data.get("key_events")), foreshadowing=joined(data.get("foreshadowing")), unresolved_conflicts=joined(data.get("unresolved_conflicts"))))
@@ -448,4 +519,11 @@ async def confirm_chapter(novel_id: int, chapter_id: int, payload: dict | None =
         fact_type, content = (str(item.get("fact_type", "plot")), str(item.get("content", ""))) if isinstance(item, dict) else ("plot", str(item))
         if content: db.add(models.CanonFact(novel_id=novel_id, source_chapter_id=chapter_id, status="draft", fact_type=fact_type, content=content))
     chapter.status = "confirmed"
-    db.commit(); return {"chapter_id": chapter_id, "status": "confirmed", "extracted": data}
+    chapter.memory_stale = False
+    db.commit(); return {
+        "chapter_id": chapter_id,
+        "status": "confirmed",
+        "extracted": data,
+        "replaced_stale_drafts": replace_stale_drafts,
+        "confirmed_memory_preserved": {"timeline": confirmed_timeline_count, "facts": confirmed_fact_count},
+    }
