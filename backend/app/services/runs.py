@@ -60,7 +60,8 @@ def task_prompt(db: Session, novel: models.Novel, run: models.AgentRun) -> tuple
     payload = run.input_snapshot; task = run.task_type
     chapter = db.get(models.Chapter, run.chapter_id) if run.chapter_id else None
     if chapter and chapter.novel_id != novel.id: raise ValueError("章节不属于当前小说")
-    context = build_chapter_context(db, novel, chapter) if chapter else build_story_context(db, novel)
+    include_writing_style = task == "generate_chapter"
+    context = build_chapter_context(db, novel, chapter, include_writing_style=include_writing_style) if chapter else build_story_context(db, novel, include_writing_style=include_writing_style)
     if task == "generate_chapter":
         if not chapter or not chapter.outline.strip(): raise ValueError("章节大纲为空，请先填写或生成建议大纲。")
         return context, f"【当前章节】第{chapter.sequence}章《{chapter.title}》\n章节大纲：{chapter.outline}\n写作要求：{chapter.writing_requirements}\n补充要求：{payload.get('style_hint','')}\n目标字数：{payload.get('target_words') or chapter.target_words or 2500}\n请直接输出完整章节正文，不写前言或标题。", False
@@ -70,7 +71,7 @@ def task_prompt(db: Session, novel: models.Novel, run: models.AgentRun) -> tuple
         return context, f"第{chapter.sequence}章《{chapter.title}》现有大纲：{chapter.outline}\n用户改进要求：{payload.get('improvement_request','')}。不能直接覆盖数据库。返回 {{\"change_summary\":\"...\",\"reasoning_summary\":\"...\",\"warnings\":[\"...\"],\"title\":\"...\",\"outline\":\"...\"}}。", True
     if task == "generate_outline":
         count = requested_chapter_count(payload) or 12
-        return context, f"为《{novel.title}》生成可编辑总纲和章节规划。题材：{payload.get('genre') or novel.genre}；主旨：{payload.get('theme') or novel.theme}；目标字数：{payload.get('target_words') or novel.target_words}；目标章节数：{count}；文风：{payload.get('style') or novel.default_style}。主要主角是最高优先级约束。必须返回恰好 {count} 个 chapters，sequence 从 1 连续到 {count}，不得宣称生成了未包含的章节。{chapter_length_instruction(count, payload.get('outline_min_chars'), payload.get('outline_max_chars'))} 返回 {{\"master_outline\":\"...\",\"chapters\":[{{\"sequence\":1,\"title\":\"...\",\"outline\":\"...\"}}]}}。", True
+        return context, f"为《{novel.title}》生成可编辑总纲和章节规划。题材：{payload.get('genre') or novel.genre}；主旨：{payload.get('theme') or novel.theme}；目标字数：{payload.get('target_words') or novel.target_words}；目标章节数：{count}。主要主角是最高优先级约束。必须返回恰好 {count} 个 chapters，sequence 从 1 连续到 {count}，不得宣称生成了未包含的章节。{chapter_length_instruction(count, payload.get('outline_min_chars'), payload.get('outline_max_chars'))} 返回 {{\"master_outline\":\"...\",\"chapters\":[{{\"sequence\":1,\"title\":\"...\",\"outline\":\"...\"}}]}}。", True
     if task == "improve_outline":
         if not novel.master_outline or not novel.master_outline.strip():
             raise ValueError("当前总纲为空，无法生成可靠的改进建议。请先保存总纲或恢复一个非空历史版本。")

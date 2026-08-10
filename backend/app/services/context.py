@@ -7,7 +7,7 @@ def _compact(items: list[str], limit: int = 12) -> str:
     return "\n".join(f"- {x}" for x in items[:limit] if x)
 
 
-def build_story_context(db: Session, novel: Novel) -> str:
+def build_story_context(db: Session, novel: Novel, include_writing_style: bool = False) -> str:
     confirmed_characters = db.scalars(select(Character).where(Character.novel_id == novel.id, or_(Character.confirmed.is_(True), Character.status == "confirmed")).order_by(Character.is_main_character.desc(), Character.importance.desc())).all()
     confirmed_events = db.scalars(select(TimelineEvent).where(TimelineEvent.novel_id == novel.id, TimelineEvent.confirmed.is_(True))).all()
     confirmed_facts = db.scalars(select(CanonFact).where(CanonFact.novel_id == novel.id, CanonFact.status == "confirmed")).all()
@@ -16,20 +16,21 @@ def build_story_context(db: Session, novel: Novel) -> str:
     others = _compact([f"{c.name}：{c.profile}；状态：{c.current_status}" for c in confirmed_characters if not c.is_main_character])
     events = _compact([f"{e.time_description} / {e.location}：{e.content}（{e.participants}）" for e in confirmed_events])
     facts = _compact([f"[{f.fact_type}] {f.content}" for f in confirmed_facts])
+    style = f"\n【本书写作风格（仅正文写作时执行）】\n{novel.default_style or '未设定'}" if include_writing_style else ""
     return f"""【固定设定】
 书名：{novel.title}
 题材：{novel.genre or '未设定'}
 主旨：{novel.theme or '未设定'}
-默认文风：{novel.default_style or '未设定'}
 总纲：{novel.master_outline or '未设定'}
+{style}
 【第一优先级：已确认主要主角（不得无依据改动核心设定）】\n{chars or '暂无'}
 【第二优先级：其他已确认人物】\n{others or '暂无'}
 【已确认时间线】\n{events or '暂无'}
 【已确认世界观与剧情事实】\n{facts or '暂无'}"""
 
 
-def build_chapter_context(db: Session, novel: Novel, chapter: Chapter) -> str:
-    base = build_story_context(db, novel)
+def build_chapter_context(db: Session, novel: Novel, chapter: Chapter, include_writing_style: bool = False) -> str:
+    base = build_story_context(db, novel, include_writing_style=include_writing_style)
     previous = db.scalars(select(Chapter).where(Chapter.novel_id == novel.id, Chapter.sequence < chapter.sequence).order_by(Chapter.sequence.desc()).limit(2)).all()
     summaries = db.scalars(select(ChapterSummary).where(ChapterSummary.novel_id == novel.id).order_by(ChapterSummary.chapter_id.desc()).limit(8)).all()
     keywords = set((chapter.outline + " " + chapter.title).lower().split())

@@ -294,7 +294,7 @@ async def json_job(db, novel, job_type, prompt, chapter_id=None, params=None):
 async def generate_outline(novel_id: int, data: schemas.GenerateOutlineRequest, db: Session = Depends(get_db)):
     novel = novel_or_404(novel_id, db)
     story_context = build_story_context(db, novel)
-    prompt = f"{story_context}\n为《{novel.title}》生成可编辑总纲和章节规划。题材：{data.genre or novel.genre}；主旨：{data.theme or novel.theme}；目标字数：{data.target_words}；章节数：{data.chapter_count}；文风：{data.style or novel.default_style}。主要主角为最高优先级约束。返回 {{\"master_outline\":\"...\",\"chapters\":[{{\"sequence\":1,\"title\":\"...\",\"outline\":\"...\"}}]}}。"
+    prompt = f"{story_context}\n为《{novel.title}》生成可编辑总纲和章节规划。题材：{data.genre or novel.genre}；主旨：{data.theme or novel.theme}；目标字数：{data.target_words}；章节数：{data.chapter_count}。主要主角为最高优先级约束。返回 {{\"master_outline\":\"...\",\"chapters\":[{{\"sequence\":1,\"title\":\"...\",\"outline\":\"...\"}}]}}。"
     return await json_job(db, novel, "generate_outline", prompt, params=data.model_dump())
 
 @app.post("/api/novels/{novel_id}/ai/improve-outline")
@@ -371,7 +371,7 @@ def apply_story_plan(novel_id: int, data: schemas.ApplyStoryPlanRequest, db: Ses
 @app.post("/api/novels/{novel_id}/ai/plan-chapters")
 async def plan_chapters(novel_id: int, data: schemas.PlanChaptersRequest, db: Session = Depends(get_db)):
     novel = novel_or_404(novel_id, db)
-    prompt = (f"基于小说总纲生成 {data.chapter_count} 个章节的可编辑规划，不直接写入数据库。总纲：{novel.master_outline}。额外要求：{data.requirements}。每章约 {data.chapter_words} 字，文风：{data.style or novel.default_style}。"
+    prompt = (f"基于小说总纲生成 {data.chapter_count} 个章节的可编辑规划，不直接写入数据库。总纲：{novel.master_outline}。额外要求：{data.requirements}。每章约 {data.chapter_words} 字。"
               + '返回 {"chapters":[{"sequence":1,"title":"...","outline":"...","target_words":' + str(data.chapter_words) + '}]}。')
     return await json_job(db, novel, "plan_chapters", prompt, params=data.model_dump())
 
@@ -408,7 +408,7 @@ async def stream_chapter(novel_id: int, chapter_id: int, data: schemas.GenerateC
     novel = novel_or_404(novel_id, db); chapter = scoped_or_404(models.Chapter, novel_id, chapter_id, db); item = job(db, novel_id, "generate_chapter", chapter_id, data.model_dump())
     if not chapter.outline.strip():
         item.status = "failed"; item.error_message = "章节大纲为空，请先生成或填写建议大纲。"; db.commit(); raise HTTPException(422, item.error_message)
-    context = build_chapter_context(db, novel, chapter)
+    context = build_chapter_context(db, novel, chapter, include_writing_style=True)
     prompt = f"{context}\n【当前章节】第{chapter.sequence}章《{chapter.title}》\n章节大纲：{chapter.outline}\n写作要求：{chapter.writing_requirements}\n补充文风：{data.style_hint}\n目标字数：{data.target_words or chapter.target_words or 2500}\n请直接输出完整章节正文，不写前言、标题或解释。"
     async def event_stream():
         chunks = []
