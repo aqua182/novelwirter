@@ -1,6 +1,7 @@
 import asyncio
 import json
 import math
+import re
 import uuid
 from datetime import datetime, timezone
 from collections.abc import AsyncGenerator
@@ -14,6 +15,31 @@ from .llm import DeepSeekProvider, parse_json_response
 
 def now(): return datetime.now(timezone.utc)
 def estimate_tokens(text: str) -> int: return max(1, math.ceil(len(text) / 2))
+
+def requested_chapter_count(payload: dict) -> int | None:
+    """Read an explicit target, including a natural-language request such as “预计 100 章”."""
+    value = payload.get("chapter_count")
+    try:
+        if value is not None and 1 <= int(value) <= 200: return int(value)
+    except (TypeError, ValueError): pass
+    text = str(payload.get("improvement_request", ""))
+    match = re.search(r"(?:预计|预期|计划|规划|扩展为|总计|共)\s*(\d{1,3})\s*章", text)
+    return int(match.group(1)) if match and 1 <= int(match.group(1)) <= 200 else None
+
+def chapter_length_instruction(count: int | None) -> str:
+    if not count: return "每章大纲应简洁、具体。"
+    limit = 55 if count >= 80 else 85 if count >= 40 else 160
+    return f"为避免长篇规划被输出长度截断，每章 outline 最多 {limit} 个汉字，只写关键转折、冲突与推进；后续可逐章展开。"
+
+def annotate_outline_count(run: models.AgentRun, result: dict):
+    expected = requested_chapter_count(run.input_snapshot)
+    rows = result.get("outline", {}).get("chapters", []) if run.task_type == "improve_outline" else result.get("chapters", [])
+    if not expected or not isinstance(rows, list): return
+    actual = len(rows)
+    if actual == expected: return
+    warning = f"目标为 {expected} 章，但模型实际返回 {actual} 章。本次建议未补齐目标章节，请调整模型最大输出 Token 后重新生成。"
+    if run.task_type == "improve_outline": result.setdefault("warnings", []).append(warning)
+    else: result.setdefault("warnings", []).append(warning)
 
 def record_event(db: Session, run: models.AgentRun, event_type: str, payload: dict):
     sequence = (db.scalar(select(models.AgentRunEvent.sequence).where(models.AgentRunEvent.run_id == run.id).order_by(models.AgentRunEvent.sequence.desc()).limit(1)) or 0) + 1
@@ -35,11 +61,14 @@ def task_prompt(db: Session, novel: models.Novel, run: models.AgentRun) -> tuple
     if task == "improve_chapter_outline":
         return context, f"第{chapter.sequence}章《{chapter.title}》现有大纲：{chapter.outline}\n用户改进要求：{payload.get('improvement_request','')}。不能直接覆盖数据库。返回 {{\"change_summary\":\"...\",\"reasoning_summary\":\"...\",\"warnings\":[\"...\"],\"title\":\"...\",\"outline\":\"...\"}}。", True
     if task == "generate_outline":
-        return context, f"为《{novel.title}》生成可编辑总纲和章节规划。题材：{payload.get('genre') or novel.genre}；主旨：{payload.get('theme') or novel.theme}；目标字数：{payload.get('target_words') or novel.target_words}；章节数：{payload.get('chapter_count', 12)}；文风：{payload.get('style') or novel.default_style}。主要主角是最高优先级约束。返回 {{\"master_outline\":\"...\",\"chapters\":[{{\"sequence\":1,\"title\":\"...\",\"outline\":\"...\"}}]}}。", True
+        count = requested_chapter_count(payload) or 12
+        return context, f"为《{novel.title}》生成可编辑总纲和章节规划。题材：{payload.get('genre') or novel.genre}；主旨：{payload.get('theme') or novel.theme}；目标字数：{payload.get('target_words') or novel.target_words}；目标章节数：{count}；文风：{payload.get('style') or novel.default_style}。主要主角是最高优先级约束。必须返回恰好 {count} 个 chapters，sequence 从 1 连续到 {count}，不得宣称生成了未包含的章节。{chapter_length_instruction(count)} 返回 {{\"master_outline\":\"...\",\"chapters\":[{{\"sequence\":1,\"title\":\"...\",\"outline\":\"...\"}}]}}。", True
     if task == "improve_outline":
         chapters = db.scalars(select(models.Chapter).where(models.Chapter.novel_id == novel.id).order_by(models.Chapter.sequence)).all()
         known = "\n".join(f"第{c.sequence}章《{c.title}》[{c.status}]：{c.outline}；已有正文：{'是' if c.content else '否'}" for c in chapters)
-        return context, f"当前总纲：{novel.master_outline}\n已有章节：{known}\n用户改进要求：{payload.get('improvement_request','')}。已确认章节和已有正文是既成事实，默认只调整后续草稿章节。返回 {{\"change_summary\":\"...\",\"reasoning_summary\":\"...\",\"affected_chapters\":[1],\"warnings\":[\"...\"],\"outline\":{{\"content\":\"...\",\"chapters\":[{{\"chapter_number\":1,\"title\":\"...\",\"outline\":\"...\",\"change_type\":\"modified\"}}]}}}}。", True
+        count = requested_chapter_count(payload)
+        count_requirement = f"目标共 {count} 章：必须返回恰好 {count} 个章节，chapter_number 从 1 连续到 {count}，不得在说明中声称生成了未包含的章节。{chapter_length_instruction(count)}" if count else "章节数量以当前规划为准；不得在说明中声称生成了未包含的章节。"
+        return context, f"当前总纲：{novel.master_outline}\n已有章节：{known}\n用户改进要求：{payload.get('improvement_request','')}。{count_requirement}\n已确认章节和已有正文是既成事实，默认只调整后续草稿章节。返回 {{\"change_summary\":\"...\",\"reasoning_summary\":\"...\",\"affected_chapters\":[1],\"warnings\":[\"...\"],\"outline\":{{\"content\":\"...\",\"chapters\":[{{\"chapter_number\":1,\"title\":\"...\",\"outline\":\"...\",\"change_type\":\"modified\"}}]}}}}。", True
     if task == "plan_chapters":
         return context, f"基于总纲规划 {payload.get('chapter_count',12)} 个可编辑章节。要求：{payload.get('requirements','')}；单章目标：{payload.get('chapter_words',3000)}。返回 {{\"chapters\":[{{\"sequence\":1,\"title\":\"...\",\"outline\":\"...\"}}]}}。", True
     if task == "extract_memory":
@@ -79,10 +108,11 @@ async def run_stream(db: Session, novel: models.Novel, run: models.AgentRun, pro
             if run.status in {"cancelled", "paused"}:
                 record_event(db, run, "status", {"stage":run.status,"message":"任务已由用户停止，草稿已保留"}); yield event(run,"done",{"status":run.status,"message":"已保留当前草稿"}); return
             output += delta
-            if not expects_json: yield event(run, "content_delta", {"field":"content","delta":delta})
+            yield event(run, "content_delta", {"field":"structured_output" if expects_json else "content","delta":delta})
             run.partial_output = output; db.commit()
         run.partial_output = output
         result = parse_json_response(output) if expects_json else {"content": output}
+        if expects_json and run.task_type in {"generate_outline", "improve_outline", "plan_chapters"}: annotate_outline_count(run, result)
         usage = getattr(provider, "last_usage", None) or {}
         input_actual = usage.get("prompt_tokens")
         output_actual = usage.get("completion_tokens") or estimate_tokens(output)
