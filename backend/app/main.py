@@ -479,19 +479,30 @@ async def confirm_chapter(novel_id: int, chapter_id: int, payload: dict | None =
         models.CanonFact.source_chapter_id == chapter_id,
         models.CanonFact.status == "confirmed",
     )) or 0
+    stale_summary = db.scalar(select(models.ChapterSummary).where(
+        models.ChapterSummary.chapter_id == chapter_id,
+        models.ChapterSummary.is_stale.is_(True),
+    ))
     if mode == "preview":
         return {
             "chapter_id": chapter_id,
             "status": "memory_preview",
             "extracted": data,
             "old": {
-                "summary_stale": bool(db.scalar(select(models.ChapterSummary).where(models.ChapterSummary.chapter_id == chapter_id, models.ChapterSummary.is_stale.is_(True)))),
+                "summary": stale_summary.summary if stale_summary else "",
+                "summary_stale": bool(stale_summary),
                 "draft_timeline": [{"id": x.id, "content": x.content, "time_description": x.time_description, "location": x.location} for x in stale_timeline],
                 "draft_facts": [{"id": x.id, "fact_type": x.fact_type, "content": x.content} for x in stale_facts],
                 "confirmed_timeline_count": confirmed_timeline_count,
                 "confirmed_fact_count": confirmed_fact_count,
             },
-            "new": {"timeline_count": len(entries(data.get("timeline_events"))), "fact_count": len(entries(data.get("facts")))},
+            "new": {
+                "summary": str(data.get("summary", "")),
+                "timeline_events": entries(data.get("timeline_events")),
+                "facts": entries(data.get("facts")),
+                "timeline_count": len(entries(data.get("timeline_events"))),
+                "fact_count": len(entries(data.get("facts"))),
+            },
             "message": "旧草稿记忆已标为过期。已确认时间线和事实不会被自动删除。",
         }
 
