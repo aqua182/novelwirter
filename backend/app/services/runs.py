@@ -53,6 +53,18 @@ def annotate_outline_count(run: models.AgentRun, result: dict):
     if run.task_type == "improve_outline": result.setdefault("warnings", []).append(warning)
     else: result.setdefault("warnings", []).append(warning)
 
+def prose_quality_warnings(text: str) -> list[str]:
+    """Detect severe generation collapse without judging intentional prose style."""
+    if len(text.strip()) < 500:
+        return []
+    warnings: list[str] = []
+    broken_hyphen_chains = re.findall(r"\b(?:[A-Za-z]+-){3,}[A-Za-z]+\b", text)
+    if len(broken_hyphen_chains) >= 2:
+        warnings.append("检测到多处异常断词/连字符串，后半段可能发生了模型输出退化。")
+    if text.count("-") > max(30, len(text) // 45):
+        warnings.append("连字符密度异常高，建议检查生成文本的连贯性。")
+    return warnings
+
 def record_event(db: Session, run: models.AgentRun, event_type: str, payload: dict):
     sequence = (db.scalar(select(models.AgentRunEvent.sequence).where(models.AgentRunEvent.run_id == run.id).order_by(models.AgentRunEvent.sequence.desc()).limit(1)) or 0) + 1
     db.add(models.AgentRunEvent(run_id=run.id, sequence=sequence, event_type=event_type, payload=payload)); db.commit()
@@ -151,6 +163,11 @@ async def run_stream(db: Session, novel: models.Novel, run: models.AgentRun, pro
             run.partial_output = output; db.commit()
         run.partial_output = output
         result = parse_json_response(output) if expects_json else {"content": output}
+        if run.task_type == "generate_chapter":
+            quality_warnings = prose_quality_warnings(output)
+            if quality_warnings:
+                result["requires_review"] = True
+                result["quality_warnings"] = quality_warnings
         if expects_json and run.task_type in {"generate_outline", "improve_outline", "plan_chapters"}: annotate_outline_count(run, result)
         usage = getattr(provider, "last_usage", None) or {}
         input_actual = usage.get("prompt_tokens")

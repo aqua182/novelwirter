@@ -7,10 +7,18 @@ def _compact(items: list[str], limit: int = 12) -> str:
     return "\n".join(f"- {x}" for x in items[:limit] if x)
 
 
-def build_story_context(db: Session, novel: Novel, include_writing_style: bool = False) -> str:
+def build_story_context(db: Session, novel: Novel, include_writing_style: bool = False, before_sequence: int | None = None) -> str:
     confirmed_characters = db.scalars(select(Character).where(Character.novel_id == novel.id, or_(Character.confirmed.is_(True), Character.status == "confirmed")).order_by(Character.is_main_character.desc(), Character.importance.desc())).all()
-    confirmed_events = db.scalars(select(TimelineEvent).where(TimelineEvent.novel_id == novel.id, TimelineEvent.confirmed.is_(True))).all()
-    confirmed_facts = db.scalars(select(CanonFact).where(CanonFact.novel_id == novel.id, CanonFact.status == "confirmed")).all()
+    event_query = select(TimelineEvent).where(TimelineEvent.novel_id == novel.id, TimelineEvent.confirmed.is_(True))
+    fact_query = select(CanonFact).where(CanonFact.novel_id == novel.id, CanonFact.status == "confirmed")
+    if before_sequence is not None:
+        previous_chapter_ids = select(Chapter.id).where(Chapter.novel_id == novel.id, Chapter.sequence < before_sequence)
+        # World facts without a chapter source remain valid. Chapter-derived memory
+        # must never leak future plot into an earlier chapter's writing context.
+        event_query = event_query.where(or_(TimelineEvent.source_chapter_id.is_(None), TimelineEvent.source_chapter_id.in_(previous_chapter_ids)))
+        fact_query = fact_query.where(or_(CanonFact.source_chapter_id.is_(None), CanonFact.source_chapter_id.in_(previous_chapter_ids)))
+    confirmed_events = db.scalars(event_query).all()
+    confirmed_facts = db.scalars(fact_query).all()
     mains = [c for c in confirmed_characters if c.is_main_character]
     chars = _compact([f"{c.name}：设定：{c.profile}；外貌：{c.appearance}；目标：{c.current_goal or c.goal}；性格：{c.personality}；关系：{c.relationships}；当前位置：{c.current_location}；当前状态/情绪：{c.current_emotion_or_state or c.current_status}；成长弧：{c.arc_or_growth}" for c in mains], 8)
     others = _compact([f"{c.name}：{c.profile}；状态：{c.current_status}" for c in confirmed_characters if not c.is_main_character])
@@ -30,9 +38,9 @@ def build_story_context(db: Session, novel: Novel, include_writing_style: bool =
 
 
 def build_chapter_context(db: Session, novel: Novel, chapter: Chapter, include_writing_style: bool = False) -> str:
-    base = build_story_context(db, novel, include_writing_style=include_writing_style)
+    base = build_story_context(db, novel, include_writing_style=include_writing_style, before_sequence=chapter.sequence)
     previous = db.scalars(select(Chapter).where(Chapter.novel_id == novel.id, Chapter.sequence < chapter.sequence).order_by(Chapter.sequence.desc()).limit(2)).all()
-    summaries = db.scalars(select(ChapterSummary).where(ChapterSummary.novel_id == novel.id).order_by(ChapterSummary.chapter_id.desc()).limit(8)).all()
+    summaries = db.scalars(select(ChapterSummary).join(Chapter, ChapterSummary.chapter_id == Chapter.id).where(ChapterSummary.novel_id == novel.id, Chapter.sequence < chapter.sequence).order_by(Chapter.sequence.desc()).limit(8)).all()
     keywords = set((chapter.outline + " " + chapter.title).lower().split())
     memory = [s for s in summaries if keywords.intersection((s.summary + s.key_events + s.unresolved_conflicts).lower().split())] or summaries[:4]
     prior = _compact([f"第{x.sequence}章《{x.title}》结尾：{x.content[-1200:]}" for x in reversed(previous)])
