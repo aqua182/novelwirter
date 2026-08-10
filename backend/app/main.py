@@ -125,11 +125,11 @@ def get_agent_run_events(run_id: str, db: Session = Depends(get_db)):
 async def start_agent_run(novel_id: int, data: schemas.AgentRunCreate, x_user_id: str | None = Header(default=None), db: Session = Depends(get_db)):
     novel = novel_or_404(novel_id, db)
     if data.chapter_id: scoped_or_404(models.Chapter, novel_id, data.chapter_id, db)
-    supported = {"generate_outline", "improve_outline", "plan_chapters", "derive_story_plan", "suggest_outline", "improve_chapter_outline", "generate_chapter", "extract_memory", "validate_chapter"}
+    supported = {"generate_outline", "improve_outline", "improve_outline_batch", "plan_chapters", "derive_story_plan", "suggest_outline", "improve_chapter_outline", "generate_chapter", "extract_memory", "validate_chapter"}
     if data.task_type not in supported: raise HTTPException(422, "不支持的 Agent 任务类型")
     user_id=current_user_id(x_user_id)
     config=resolve_model_config(db,user_id,novel,data.task_type,data.model_config_id)
-    group="writing" if data.task_type=="generate_chapter" else "outline" if data.task_type in {"generate_outline","improve_outline","plan_chapters","derive_story_plan","suggest_outline","improve_chapter_outline"} else "review"
+    group="writing" if data.task_type=="generate_chapter" else "outline" if data.task_type in {"generate_outline","improve_outline","improve_outline_batch","plan_chapters","derive_story_plan","suggest_outline","improve_chapter_outline"} else "review"
     override=getattr(novel,f"{group}_temperature_override")
     temperature=data.temperature if data.temperature is not None else (override if override is not None else (config.default_temperature if config else 0.7))
     max_tokens=data.max_output_tokens if data.max_output_tokens is not None else (config.max_output_tokens if config else None)

@@ -72,14 +72,28 @@ def task_prompt(db: Session, novel: models.Novel, run: models.AgentRun) -> tuple
     if task == "generate_outline":
         count = requested_chapter_count(payload) or 12
         return context, f"为《{novel.title}》生成可编辑总纲和章节规划。题材：{payload.get('genre') or novel.genre}；主旨：{payload.get('theme') or novel.theme}；目标字数：{payload.get('target_words') or novel.target_words}；目标章节数：{count}。主要主角是最高优先级约束。必须返回恰好 {count} 个 chapters，sequence 从 1 连续到 {count}，不得宣称生成了未包含的章节。{chapter_length_instruction(count, payload.get('outline_min_chars'), payload.get('outline_max_chars'))} 返回 {{\"master_outline\":\"...\",\"chapters\":[{{\"sequence\":1,\"title\":\"...\",\"outline\":\"...\"}}]}}。", True
-    if task == "improve_outline":
+    if task in {"improve_outline", "improve_outline_batch"}:
         if not novel.master_outline or not novel.master_outline.strip():
             raise ValueError("当前总纲为空，无法生成可靠的改进建议。请先保存总纲或恢复一个非空历史版本。")
         chapters = db.scalars(select(models.Chapter).where(models.Chapter.novel_id == novel.id).order_by(models.Chapter.sequence)).all()
         known = "\n".join(f"第{c.sequence}章《{c.title}》[{c.status}]：{c.outline}；已有正文：{'是' if c.content else '否'}" for c in chapters)
         count = requested_chapter_count(payload)
-        count_requirement = f"目标共 {count} 章：必须返回恰好 {count} 个章节，chapter_number 从 1 连续到 {count}，不得在说明中声称生成了未包含的章节。{chapter_length_instruction(count, payload.get('outline_min_chars'), payload.get('outline_max_chars'))}" if count else "章节数量以当前规划为准；不得在说明中声称生成了未包含的章节。"
-        return context, f"【必须保留并基于的当前总纲】\n{novel.master_outline}\n【当前总纲结束】\n已有章节：{known}\n用户改进要求：{payload.get('improvement_request','')}。{count_requirement}\n只能在当前总纲基础上做有针对性的增补或调整：保留已写明的人物、事件顺序、篇章结构和结局；不要用泛化的犯罪/爱情套路替换既有剧情。change_summary 与 reasoning_summary 必须点出具体保留或调整的现有情节。已确认章节和已有正文是既成事实，默认只调整后续草稿章节。返回 {{\"change_summary\":\"...\",\"reasoning_summary\":\"...\",\"affected_chapters\":[1],\"warnings\":[\"...\"],\"outline\":{{\"content\":\"改进后的完整总纲\",\"chapters\":[{{\"chapter_number\":1,\"title\":\"...\",\"outline\":\"...\",\"change_type\":\"modified\"}}]}}}}。", True
+        if task == "improve_outline_batch":
+            if not count:
+                raise ValueError("分批改进需要指定计划章节数。")
+            try:
+                start = max(1, int(payload.get("chapter_start", 1)))
+                end = min(count, int(payload.get("chapter_end", count)))
+            except (TypeError, ValueError):
+                raise ValueError("分批章节范围无效。")
+            if start > end:
+                raise ValueError("分批章节范围无效。")
+            count_requirement = f"全书目标共 {count} 章；当前只生成第 {start}–{end} 章，必须恰好返回这 {end - start + 1} 个章节，chapter_number 从 {start} 连续到 {end}。不得返回其他章节，也不得宣称本批次已经包含其他章节。{chapter_length_instruction(count, payload.get('outline_min_chars'), payload.get('outline_max_chars'))}"
+            outline_content = "本批次是首批时，outline.content 写改进后的完整总纲；其他批次将 outline.content 设为空字符串。" if start == 1 else "outline.content 必须为空字符串；只返回本批章节。"
+        else:
+            count_requirement = f"目标共 {count} 章：必须返回恰好 {count} 个章节，chapter_number 从 1 连续到 {count}，不得在说明中声称生成了未包含的章节。{chapter_length_instruction(count, payload.get('outline_min_chars'), payload.get('outline_max_chars'))}" if count else "章节数量以当前规划为准；不得在说明中声称生成了未包含的章节。"
+            outline_content = "outline.content 必须写改进后的完整总纲。"
+        return context, f"【必须保留并基于的当前总纲】\n{novel.master_outline}\n【当前总纲结束】\n已有章节：{known}\n用户改进要求：{payload.get('improvement_request','')}。{count_requirement}\n只能在当前总纲基础上做有针对性的增补或调整：保留已写明的人物、事件顺序、篇章结构和结局；不要用泛化的犯罪/爱情套路替换既有剧情。change_summary 与 reasoning_summary 必须点出具体保留或调整的现有情节。已确认章节和已有正文是既成事实，默认只调整后续草稿章节。{outline_content} 返回 {{\"change_summary\":\"...\",\"reasoning_summary\":\"...\",\"affected_chapters\":[1],\"warnings\":[\"...\"],\"outline\":{{\"content\":\"改进后的完整总纲或空字符串\",\"chapters\":[{{\"chapter_number\":1,\"title\":\"...\",\"outline\":\"...\",\"change_type\":\"modified\"}}]}}}}。", True
     if task == "plan_chapters":
         return context, f"基于总纲规划 {payload.get('chapter_count',12)} 个可编辑章节。要求：{payload.get('requirements','')}；单章目标：{payload.get('chapter_words',3000)}。返回 {{\"chapters\":[{{\"sequence\":1,\"title\":\"...\",\"outline\":\"...\"}}]}}。", True
     if task == "derive_story_plan":
