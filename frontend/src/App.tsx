@@ -4,6 +4,7 @@ import { AgentEvent, Chapter, Character, Fact, json, ModelConfig, Novel, request
 type Workspace={novel:Novel;chapters:Chapter[];characters:Character[];facts:Fact[];timeline:Timeline[]}
 type Issue={type:string;severity:string;description:string;suggestion:string}
 type Proposal={master_outline?:string;chapters?:any[];change_summary?:string;reasoning_summary?:string;reasoningSummary?:string;affected_chapters?:number[];warnings?:string[];outline?:{content:string;chapters:any[]}}
+let currentRunTaskType = ''
 const newNovel={title:'',genre:'',theme:'',target_words:80000,default_style:''}
 const stylePresets=[
  {name:'沉浸式叙事',text:'以鲜明、具体的感官细节建立场景；通过动作、反应、对话与细微观察呈现情绪，避免直接解释。让人物关系有拉扯与动机，保持独特的角色声音；使用有力动词、长短交替的句子和新鲜比喻。世界观信息融入行动与对话，避免说明书式倾倒。根据场景调节节奏，在悬念处克制推进，在冲突处收紧句子。避免陈词滥调与模板化措辞。'},
@@ -50,7 +51,7 @@ function Workbench({workspace,chapter,select,refresh,back,removeNovel,tell,openM
  useEffect(()=>{loadRuns()},[workspace.novel.id,chapter?.id])
  const loadModels=()=>request<ModelConfig[]>('/model-configs').then(items=>{const enabled=items.filter(x=>x.enabled);setModels(enabled);const preferred=enabled.find(x=>x.id===workspace.novel.default_writing_model_config_id)||enabled.find(x=>x.is_default)||enabled[0];if(preferred){setModelId(current=>enabled.some(x=>x.id===current)?current:preferred.id);setTemperature(current=>current===0.7?preferred.default_temperature:current)}}).catch(()=>{})
  useEffect(()=>{loadModels();const sync=()=>loadModels();window.addEventListener('model-configs-updated',sync);return()=>window.removeEventListener('model-configs-updated',sync)},[workspace.novel.id])
- const execute=async(task_type:string,input:object,chapter_id?:number,onEvent?:(event:AgentEvent)=>void)=>{let result:any,streamError='';const controller=new AbortController();activeRequest.current=controller;setRunEvents([]);setRunId('');try{await streamAgentRun(`/novels/${workspace.novel.id}/agent-runs/stream`,{task_type,chapter_id,input,model_config_id:modelId||undefined,temperature},event=>{setRunId(event.run_id);setRunEvents(old=>[...old.slice(-39),event]);if(event.event_type==='result')result=event.data;if(event.event_type==='error')streamError=event.data.message||'AI 任务未能完成';onEvent?.(event)},controller.signal);if(streamError)throw new Error(streamError)}catch(e:any){if(!controller.signal.aborted)throw e}finally{if(activeRequest.current===controller)activeRequest.current=null;await loadRuns()}return result}
+ const execute=async(task_type:string,input:object,chapter_id?:number,onEvent?:(event:AgentEvent)=>void)=>{let result:any,streamError='';const controller=new AbortController();activeRequest.current=controller;currentRunTaskType=task_type;setRunEvents([]);setRunId('');try{await streamAgentRun(`/novels/${workspace.novel.id}/agent-runs/stream`,{task_type,chapter_id,input,model_config_id:modelId||undefined,temperature},event=>{setRunId(event.run_id);setRunEvents(old=>[...old.slice(-39),event]);if(event.event_type==='result')result=event.data;if(event.event_type==='error')streamError=event.data.message||'AI 任务未能完成';onEvent?.(event)},controller.signal);if(streamError)throw new Error(streamError)}catch(e:any){if(!controller.signal.aborted)throw e}finally{if(activeRequest.current===controller){activeRequest.current=null;if(currentRunTaskType===task_type)currentRunTaskType=''}await loadRuns()}return result}
  const setNovelModel=async()=>{if(!modelId)return tell('请先在模型设置中创建并启用模型');try{await api(`/novels/${workspace.novel.id}`,'PATCH',{default_writing_model_config_id:modelId,default_outline_model_config_id:modelId,default_review_model_config_id:modelId});await refresh();tell('已设为本小说默认模型')}catch(e:any){tell(e.message)}}
  const resume=async(id:string)=>{let result:any;setRunEvents([]);setRunId(id);await streamAgentRun(`/agent-runs/${id}/resume/stream`,{},event=>{setRunEvents(old=>[...old.slice(-39),event]);if(event.event_type==='result')result=event.data});await loadRuns();return result}
  const cancel=async(id:string)=>{await api(`/agent-runs/${id}/cancel`,'POST');activeRequest.current?.abort();await loadRuns();tell('已停止运行，草稿与上下文快照已保留')}
@@ -124,6 +125,7 @@ function StylePage({novel,refresh,tell}:{novel:Novel;refresh:()=>void;tell:(x:st
 }
 
 function OutlinePage({novel,workspace,proposal,busy,runId,streamText,streamError,generate,improve,buildPlan,cancel,apply,discard,refresh,tell}:{novel:Novel;workspace:Workspace;proposal:Proposal|null;busy:boolean;runId:string;streamText:string;streamError:string;generate:()=>void;improve:(x:string,count?:number,outlineMinChars?:number,outlineMaxChars?:number)=>void;buildPlan:()=>Promise<any>;cancel:(id:string)=>Promise<void>;apply:(x?:number[])=>void;discard:()=>void;refresh:()=>void;tell:(x:string)=>void}){
+ busy=busy&&['generate_outline','improve_outline','improve_outline_master','improve_outline_batch'].includes(currentRunTaskType)
  const [outline,setOutline]=useState(novel.master_outline||''),[feedback,setFeedback]=useState(''),[chapterCount,setChapterCount]=useState(''),[outlineMinChars,setOutlineMinChars]=useState(''),[outlineMaxChars,setOutlineMaxChars]=useState(''),[selected,setSelected]=useState<number[]>([]),[revisions,setRevisions]=useState<any[]>([]),[showRevisions,setShowRevisions]=useState(false),[revision,setRevision]=useState<any|null>(null),[page,setPage]=useState(1),[storyPlan,setStoryPlan]=useState<any|null>(null),[storyPlanPage,setStoryPlanPage]=useState(1)
  useEffect(()=>{setOutline(novel.master_outline||'')},[novel.id,novel.master_outline])
  useEffect(()=>{setPage(1);setSelected([])},[proposal])
@@ -152,6 +154,7 @@ function OutlinePage({novel,workspace,proposal,busy,runId,streamText,streamError
 }
 
 function TimelinePage({workspace,busy,buildPlan,refresh,tell}:{workspace:Workspace;busy:boolean;buildPlan:()=>Promise<any>;refresh:()=>void;tell:(x:string)=>void}){
+ busy=busy&&currentRunTaskType==='derive_story_plan'
  const [preview,setPreview]=useState<any>(null)
  const [page,setPage]=useState(1)
  const timeline=[...workspace.timeline].sort((a,b)=>a.id-b.id)
