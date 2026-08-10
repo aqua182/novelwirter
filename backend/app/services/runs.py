@@ -9,12 +9,16 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from ..config import get_settings
 from .. import models
+from ..agents import AgentRegistry, NovelMemoryService, ValidatorAgent, WriterAgent
 from .context import build_chapter_context, build_story_context
 from .llm import DeepSeekProvider, parse_json_response
 
 
 def now(): return datetime.now(timezone.utc)
 def estimate_tokens(text: str) -> int: return max(1, math.ceil(len(text) / 2))
+
+shared_memory = NovelMemoryService()
+agent_registry = AgentRegistry([WriterAgent(shared_memory), ValidatorAgent(shared_memory)])
 
 def requested_chapter_count(payload: dict) -> int | None:
     """Read an explicit target, including a natural-language request such as “预计 100 章”."""
@@ -58,13 +62,13 @@ def event(run: models.AgentRun, event_type: str, data: dict) -> str:
 
 def task_prompt(db: Session, novel: models.Novel, run: models.AgentRun) -> tuple[str, str, bool]:
     payload = run.input_snapshot; task = run.task_type
+    agent = agent_registry.resolve(task)
+    if agent:
+        instruction = agent.build_instruction(db, novel, run)
+        return instruction.context, instruction.prompt, instruction.expects_json
     chapter = db.get(models.Chapter, run.chapter_id) if run.chapter_id else None
     if chapter and chapter.novel_id != novel.id: raise ValueError("章节不属于当前小说")
-    include_writing_style = task == "generate_chapter"
-    context = build_chapter_context(db, novel, chapter, include_writing_style=include_writing_style) if chapter else build_story_context(db, novel, include_writing_style=include_writing_style)
-    if task == "generate_chapter":
-        if not chapter or not chapter.outline.strip(): raise ValueError("章节大纲为空，请先填写或生成建议大纲。")
-        return context, f"【当前章节】第{chapter.sequence}章《{chapter.title}》\n章节大纲：{chapter.outline}\n写作要求：{chapter.writing_requirements}\n补充要求：{payload.get('style_hint','')}\n目标字数：{payload.get('target_words') or chapter.target_words or 2500}\n请直接输出完整章节正文，不写前言或标题。", False
+    context = build_chapter_context(db, novel, chapter) if chapter else build_story_context(db, novel)
     if task == "suggest_outline":
         return context, f"为第{chapter.sequence}章提出可编辑章节大纲。返回 {{\"title\":\"...\",\"outline\":\"...\"}}。", True
     if task == "improve_chapter_outline":
@@ -108,8 +112,6 @@ def task_prompt(db: Session, novel: models.Novel, run: models.AgentRun) -> tuple
 请覆盖完整故事阶段，提炼 8–24 条时间线事件，并为每位主要人物（尤其主角）给出成长弧和关键转折。返回 {{\"timeline_events\":[{{\"time_description\":\"第1–3章/某阶段\",\"location\":\"地点或待确定\",\"content\":\"事件与因果\",\"participants\":\"人物\"}}],\"character_arcs\":[{{\"name\":\"人物名\",\"arc\":\"起点→转折→终点的成长弧\",\"turning_points\":[\"第X章：…\"]}}]}}。""", True
     if task == "extract_memory":
         return context, f"从第{chapter.sequence}章正文提取结构化记忆。正文：{chapter.content}\n返回 {{\"summary\":\"...\",\"key_events\":[\"...\"],\"foreshadowing\":[\"...\"],\"unresolved_conflicts\":[\"...\"],\"timeline_events\":[],\"facts\":[]}}。", True
-    if task == "validate_chapter":
-        return context, f"校验第{chapter.sequence}章。大纲：{chapter.outline}\n正文：{chapter.content}\n只返回问题，不改写正文。返回 {{\"passed\":true,\"issues\":[{{\"type\":\"timeline_conflict\",\"severity\":\"medium\",\"description\":\"...\",\"suggestion\":\"...\"}}]}}。", True
     raise ValueError(f"不支持的任务类型：{task}")
 
 def snapshot_context(db: Session, novel: models.Novel, run: models.AgentRun, context: str, prompt: str) -> tuple[models.ContextSnapshot, dict]:
