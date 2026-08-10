@@ -41,7 +41,7 @@ class ChapterRead(ChapterBase, ORMModel): id: int; novel_id: int; actual_words: 
 
 
 class CharacterBase(BaseModel):
-    name: str; profile: str = ""; goal: str = ""; personality: str = ""; relationships: str = ""; current_status: str = ""; confirmed: bool = False
+    name: str; profile: str = ""; appearance: str = ""; goal: str = ""; personality: str = ""; relationships: str = ""; current_status: str = ""; confirmed: bool = False
     is_main_character: bool = False; importance: int = Field(default=3, ge=1, le=5); current_location: str = ""; current_goal: str = ""; current_emotion_or_state: str = ""; arc_or_growth: str = ""; status: str = "draft"
 class CharacterCreate(CharacterBase): pass
 class CharacterUpdate(CharacterBase): name: str | None = None

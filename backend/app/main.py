@@ -23,7 +23,7 @@ def run_lightweight_migrations():
     inspector = inspect(engine)
     if "characters" not in inspector.get_table_names(): return
     existing = {column["name"] for column in inspector.get_columns("characters")}
-    additions = {"is_main_character": "BOOLEAN DEFAULT 0", "importance": "INTEGER DEFAULT 3", "current_location": "VARCHAR(200) DEFAULT ''", "current_goal": "TEXT DEFAULT ''", "current_emotion_or_state": "TEXT DEFAULT ''", "arc_or_growth": "TEXT DEFAULT ''", "status": "VARCHAR(20) DEFAULT 'draft'"}
+    additions = {"appearance": "TEXT DEFAULT ''", "is_main_character": "BOOLEAN DEFAULT 0", "importance": "INTEGER DEFAULT 3", "current_location": "VARCHAR(200) DEFAULT ''", "current_goal": "TEXT DEFAULT ''", "current_emotion_or_state": "TEXT DEFAULT ''", "arc_or_growth": "TEXT DEFAULT ''", "status": "VARCHAR(20) DEFAULT 'draft'"}
     with engine.begin() as conn:
         for name, definition in additions.items():
             if name not in existing: conn.execute(text(f"ALTER TABLE characters ADD COLUMN {name} {definition}"))

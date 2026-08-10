@@ -12,7 +12,7 @@ def build_story_context(db: Session, novel: Novel) -> str:
     confirmed_events = db.scalars(select(TimelineEvent).where(TimelineEvent.novel_id == novel.id, TimelineEvent.confirmed.is_(True))).all()
     confirmed_facts = db.scalars(select(CanonFact).where(CanonFact.novel_id == novel.id, CanonFact.status == "confirmed")).all()
     mains = [c for c in confirmed_characters if c.is_main_character]
-    chars = _compact([f"{c.name}：设定：{c.profile}；目标：{c.current_goal or c.goal}；性格：{c.personality}；关系：{c.relationships}；当前位置：{c.current_location}；当前状态/情绪：{c.current_emotion_or_state or c.current_status}；成长弧：{c.arc_or_growth}" for c in mains], 8)
+    chars = _compact([f"{c.name}：设定：{c.profile}；外貌：{c.appearance}；目标：{c.current_goal or c.goal}；性格：{c.personality}；关系：{c.relationships}；当前位置：{c.current_location}；当前状态/情绪：{c.current_emotion_or_state or c.current_status}；成长弧：{c.arc_or_growth}" for c in mains], 8)
     others = _compact([f"{c.name}：{c.profile}；状态：{c.current_status}" for c in confirmed_characters if not c.is_main_character])
     events = _compact([f"{e.time_description} / {e.location}：{e.content}（{e.participants}）" for e in confirmed_events])
     facts = _compact([f"[{f.fact_type}] {f.content}" for f in confirmed_facts])

@@ -58,6 +58,7 @@ class Character(Timestamped, Base):
     novel_id: Mapped[int] = mapped_column(ForeignKey("novels.id"), index=True)
     name: Mapped[str] = mapped_column(String(100))
     profile: Mapped[str] = mapped_column(Text, default="")
+    appearance: Mapped[str] = mapped_column(Text, default="")
     goal: Mapped[str] = mapped_column(Text, default="")
     personality: Mapped[str] = mapped_column(Text, default="")
     relationships: Mapped[str] = mapped_column(Text, default="")
