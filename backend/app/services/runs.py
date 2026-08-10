@@ -123,8 +123,9 @@ async def run_stream(db: Session, novel: models.Novel, run: models.AgentRun, pro
         input_actual = usage.get("prompt_tokens")
         output_actual = usage.get("completion_tokens") or estimate_tokens(output)
         total_actual = usage.get("total_tokens") or ((input_actual or context_data["estimated_tokens"]) + output_actual)
+        token_data = {"input_estimated":context_data["estimated_tokens"],"input_actual":input_actual,"output":output_actual,"total":total_actual,"budget":context_data["token_budget"]}
         run.result = result; run.status = "completed"; run.completed_at = now(); db.add(models.TokenUsage(novel_id=novel.id, chapter_id=run.chapter_id, run_id=run.id, task_type=run.task_type, model_name=run.model_name, input_tokens_estimated=context_data["estimated_tokens"], input_tokens_actual=input_actual, context_budget=context_data["token_budget"], compressed=bool(context_data["compressed_items"]), compressed_token_savings=0, output_tokens_actual=output_actual, total_tokens=total_actual)); db.commit()
-        record_event(db, run, "result", {"message":"AI 任务已完成"}); yield event(run, "result", result); yield event(run, "done", {"status":"completed"})
+        record_event(db, run, "token", token_data); yield event(run, "token", token_data); record_event(db, run, "result", {"message":"AI 任务已完成"}); yield event(run, "result", result); yield event(run, "done", {"status":"completed"})
     except asyncio.CancelledError:
         run.status = "interrupted"; db.commit(); record_event(db, run, "status", {"stage":"interrupted","message":"连接中断，已保留可恢复草稿"}); raise
     except Exception as exc:

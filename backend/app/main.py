@@ -389,16 +389,24 @@ async def validate_chapter(novel_id: int, chapter_id: int, db: Session = Depends
 
 @app.post("/api/novels/{novel_id}/chapters/{chapter_id}/confirm")
 async def confirm_chapter(novel_id: int, chapter_id: int, payload: dict | None = None, db: Session = Depends(get_db)):
-    novel = novel_or_404(novel_id, db); chapter = scoped_or_404(models.Chapter, novel_id, chapter_id, db); chapter.status = "confirmed"; db.commit()
+    novel = novel_or_404(novel_id, db); chapter = scoped_or_404(models.Chapter, novel_id, chapter_id, db)
     prompt = f"提取以下章节的结构化记忆，供用户确认后成为设定。章节：{chapter.content}\n返回 {{\"summary\":\"...\",\"key_events\":[\"...\"],\"foreshadowing\":[\"...\"],\"unresolved_conflicts\":[\"...\"],\"timeline_events\":[{{\"time_description\":\"\",\"location\":\"\",\"content\":\"\",\"participants\":\"\"}}],\"facts\":[{{\"fact_type\":\"character_state|relationship|world|plot\",\"content\":\"...\"}}]}}。"
     if payload and isinstance(payload.get("extracted"), dict):
         data = payload["extracted"]
     else:
         response = await json_job(db, novel, "extract_memory", prompt, chapter.id)
         data = response["result"]
+    if not isinstance(data, dict): raise HTTPException(502, "记忆提取结果格式不正确，请重试")
+    def entries(value): return value if isinstance(value, list) else []
+    def joined(value): return "\n".join(str(item) for item in entries(value))
     old = db.scalar(select(models.ChapterSummary).where(models.ChapterSummary.chapter_id == chapter_id))
     if old: db.delete(old)
-    db.add(models.ChapterSummary(novel_id=novel_id, chapter_id=chapter_id, summary=data.get("summary", ""), key_events="\n".join(data.get("key_events", [])), foreshadowing="\n".join(data.get("foreshadowing", [])), unresolved_conflicts="\n".join(data.get("unresolved_conflicts", []))))
-    for event in data.get("timeline_events", []): db.add(models.TimelineEvent(novel_id=novel_id, source_chapter_id=chapter_id, confirmed=False, **{k: str(event.get(k, "")) for k in ("time_description","location","content","participants")}))
-    for fact in data.get("facts", []): db.add(models.CanonFact(novel_id=novel_id, source_chapter_id=chapter_id, status="draft", fact_type=str(fact.get("fact_type", "plot")), content=str(fact.get("content", ""))))
+    db.add(models.ChapterSummary(novel_id=novel_id, chapter_id=chapter_id, summary=str(data.get("summary", "")), key_events=joined(data.get("key_events")), foreshadowing=joined(data.get("foreshadowing")), unresolved_conflicts=joined(data.get("unresolved_conflicts"))))
+    for item in entries(data.get("timeline_events")):
+        fields = {k: str(item.get(k, "")) for k in ("time_description","location","content","participants")} if isinstance(item, dict) else {"time_description":"", "location":"", "content":str(item), "participants":""}
+        if fields["content"]: db.add(models.TimelineEvent(novel_id=novel_id, source_chapter_id=chapter_id, confirmed=False, **fields))
+    for item in entries(data.get("facts")):
+        fact_type, content = (str(item.get("fact_type", "plot")), str(item.get("content", ""))) if isinstance(item, dict) else ("plot", str(item))
+        if content: db.add(models.CanonFact(novel_id=novel_id, source_chapter_id=chapter_id, status="draft", fact_type=fact_type, content=content))
+    chapter.status = "confirmed"
     db.commit(); return {"chapter_id": chapter_id, "status": "confirmed", "extracted": data}

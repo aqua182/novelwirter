@@ -78,6 +78,7 @@ function Inspector({workspace,issues,runId,events,runs,reloadRuns,resume,cancel,
 function RunPanel({runId,events,runs,reload,resume,cancel}:{runId:string;events:AgentEvent[];runs:any[];reload:()=>void;resume:(id:string)=>Promise<any>;cancel:(id:string)=>Promise<void>}){
  const current=runs.find(x=>x.id===runId)
  const context=events.find(x=>x.event_type==='context')?.data
+ const token=events.find(x=>x.event_type==='token')?.data
  const isRunning=Boolean(runId)&&events.some(x=>x.event_type==='status'&&x.data.stage==='running')&&!events.some(x=>x.event_type==='done')
  const recoverable=runs.filter(r=>['interrupted','cancelled','failed','paused'].includes(r.status)).slice(0,3)
  return <section className="run-panel">
@@ -85,7 +86,8 @@ function RunPanel({runId,events,runs,reload,resume,cancel}:{runId:string;events:
    {runId&&<>
      <p className="run-id">{runId.slice(0,8)} · {current?.status||'运行中'}</p>
      {context&&<div className="run-context"><b>上下文 {context.estimated_tokens}/{context.token_budget} Token</b><small>已带入：{context.included_items?.join('、')}</small>{context.compressed_items?.length>0&&<small>已压缩：{context.compressed_items.join('、')}</small>}</div>}
-     <div className="run-events">{events.filter(x=>x.event_type!=='content_delta').slice(-8).map((e,i)=><p key={i}>{e.event_type==='status'||e.event_type==='tool'?e.data.message:e.event_type==='warning'?`⚠ ${e.data.message}`:e.event_type==='done'?'✓ 运行结束':e.event_type==='error'?`错误：${e.data.message}`:'已获得结果'}</p>)}</div>
+     {token&&<p className="run-token">本次 Token：输入 {token.input_actual??token.input_estimated} · 输出 {token.output} · 合计 {token.total}</p>}
+     <div className="run-events">{events.filter(x=>x.event_type!=='content_delta').slice(-8).map((e,i)=><p key={i}>{e.event_type==='status'||e.event_type==='tool'?e.data.message:e.event_type==='warning'?`⚠ ${e.data.message}`:e.event_type==='token'?`Token：输入 ${e.data.input_actual??e.data.input_estimated}，输出 ${e.data.output}，合计 ${e.data.total}`:e.event_type==='done'?'✓ 运行结束':e.event_type==='error'?`错误：${e.data.message}`:'已获得结果'}</p>)}</div>
      {isRunning&&<button className="tiny danger-link" onClick={()=>cancel(runId)}>停止并保留草稿</button>}
    </>}
    {recoverable.map(r=><div className="recover-run" key={r.id}><span>{r.task_type} · {r.status}</span><button className="tiny" onClick={()=>resume(r.id)}>从中断处恢复</button></div>)}
