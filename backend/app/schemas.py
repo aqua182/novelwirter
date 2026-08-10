@@ -71,6 +71,9 @@ class ApplyOutlineImprovementRequest(BaseModel):
     master_outline: str | None = None
     chapters: list[dict] = Field(default_factory=list)
     apply_chapter_numbers: list[int] | None = None
+class ApplyStoryPlanRequest(BaseModel):
+    timeline_events: list[dict] = Field(default_factory=list)
+    character_arcs: list[dict] = Field(default_factory=list)
 class OutlineRevisionRead(ORMModel): id: int; novel_id: int; content: str; reason: str; created_at: datetime
 class AgentRunCreate(BaseModel):
     task_type: str

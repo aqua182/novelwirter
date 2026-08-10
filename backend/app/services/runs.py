@@ -81,6 +81,14 @@ def task_prompt(db: Session, novel: models.Novel, run: models.AgentRun) -> tuple
         return context, f"【必须保留并基于的当前总纲】\n{novel.master_outline}\n【当前总纲结束】\n已有章节：{known}\n用户改进要求：{payload.get('improvement_request','')}。{count_requirement}\n只能在当前总纲基础上做有针对性的增补或调整：保留已写明的人物、事件顺序、篇章结构和结局；不要用泛化的犯罪/爱情套路替换既有剧情。change_summary 与 reasoning_summary 必须点出具体保留或调整的现有情节。已确认章节和已有正文是既成事实，默认只调整后续草稿章节。返回 {{\"change_summary\":\"...\",\"reasoning_summary\":\"...\",\"affected_chapters\":[1],\"warnings\":[\"...\"],\"outline\":{{\"content\":\"改进后的完整总纲\",\"chapters\":[{{\"chapter_number\":1,\"title\":\"...\",\"outline\":\"...\",\"change_type\":\"modified\"}}]}}}}。", True
     if task == "plan_chapters":
         return context, f"基于总纲规划 {payload.get('chapter_count',12)} 个可编辑章节。要求：{payload.get('requirements','')}；单章目标：{payload.get('chapter_words',3000)}。返回 {{\"chapters\":[{{\"sequence\":1,\"title\":\"...\",\"outline\":\"...\"}}]}}。", True
+    if task == "derive_story_plan":
+        chapters = db.scalars(select(models.Chapter).where(models.Chapter.novel_id == novel.id).order_by(models.Chapter.sequence)).all()
+        if not novel.master_outline.strip() or not chapters:
+            raise ValueError("请先保存总纲并应用至少一章章节规划，再生成创作时间线与人物弧线。")
+        chapter_plan = "\n".join(f"第{item.sequence}章《{item.title}》：{item.outline}" for item in chapters)
+        return context, f"""依据以下已经应用的总纲与章节规划，生成供后续创作和一致性校验使用的结构化计划。不得编造与总纲矛盾的关键事件；内容仅作为草稿，不能改变已确认设定。
+【章节规划】\n{chapter_plan}
+请覆盖完整故事阶段，提炼 8–24 条时间线事件，并为每位主要人物（尤其主角）给出成长弧和关键转折。返回 {{\"timeline_events\":[{{\"time_description\":\"第1–3章/某阶段\",\"location\":\"地点或待确定\",\"content\":\"事件与因果\",\"participants\":\"人物\"}}],\"character_arcs\":[{{\"name\":\"人物名\",\"arc\":\"起点→转折→终点的成长弧\",\"turning_points\":[\"第X章：…\"]}}]}}。""", True
     if task == "extract_memory":
         return context, f"从第{chapter.sequence}章正文提取结构化记忆。正文：{chapter.content}\n返回 {{\"summary\":\"...\",\"key_events\":[\"...\"],\"foreshadowing\":[\"...\"],\"unresolved_conflicts\":[\"...\"],\"timeline_events\":[],\"facts\":[]}}。", True
     if task == "validate_chapter":

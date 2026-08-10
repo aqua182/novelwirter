@@ -44,7 +44,7 @@ def owned_config_or_404(db: Session, config_id: str, user_id: str) -> ModelConfi
     return item
 
 def resolve_model_config(db: Session, user_id: str, novel: Novel, task_type: str, requested_id: str | None):
-    group = "writing" if task_type == "generate_chapter" else "outline" if task_type in {"generate_outline","improve_outline","plan_chapters","suggest_outline","improve_chapter_outline"} else "review"
+    group = "writing" if task_type == "generate_chapter" else "outline" if task_type in {"generate_outline","improve_outline","plan_chapters","derive_story_plan","suggest_outline","improve_chapter_outline"} else "review"
     novel_id = getattr(novel, f"default_{group}_model_config_id")
     if requested_id:
         item = owned_config_or_404(db, requested_id, user_id)
@@ -54,7 +54,12 @@ def resolve_model_config(db: Session, user_id: str, novel: Novel, task_type: str
         if not item or item.user_id != user_id or not item.enabled:
             item = db.scalar(select(ModelConfig).where(ModelConfig.user_id == user_id, ModelConfig.enabled.is_(True), ModelConfig.is_default.is_(True)))
     if not item: return None
-    if item.supported_tasks and task_type not in item.supported_tasks: raise HTTPException(422, "该模型未启用当前任务")
+    # Older local configurations may still carry a restrictive task list from the
+    # previous UI.  Story-plan extraction is an outline operation, so honor an
+    # existing outline permission instead of unexpectedly blocking this new flow.
+    allowed_tasks = {task_type}
+    if task_type == "derive_story_plan": allowed_tasks.add("improve_outline")
+    if item.supported_tasks and not allowed_tasks.intersection(item.supported_tasks): raise HTTPException(422, "该模型未启用当前任务")
     return item
 
 def safe_url_label(url: str) -> str:

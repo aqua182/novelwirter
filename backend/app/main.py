@@ -125,11 +125,11 @@ def get_agent_run_events(run_id: str, db: Session = Depends(get_db)):
 async def start_agent_run(novel_id: int, data: schemas.AgentRunCreate, x_user_id: str | None = Header(default=None), db: Session = Depends(get_db)):
     novel = novel_or_404(novel_id, db)
     if data.chapter_id: scoped_or_404(models.Chapter, novel_id, data.chapter_id, db)
-    supported = {"generate_outline", "improve_outline", "plan_chapters", "suggest_outline", "improve_chapter_outline", "generate_chapter", "extract_memory", "validate_chapter"}
+    supported = {"generate_outline", "improve_outline", "plan_chapters", "derive_story_plan", "suggest_outline", "improve_chapter_outline", "generate_chapter", "extract_memory", "validate_chapter"}
     if data.task_type not in supported: raise HTTPException(422, "不支持的 Agent 任务类型")
     user_id=current_user_id(x_user_id)
     config=resolve_model_config(db,user_id,novel,data.task_type,data.model_config_id)
-    group="writing" if data.task_type=="generate_chapter" else "outline" if data.task_type in {"generate_outline","improve_outline","plan_chapters","suggest_outline","improve_chapter_outline"} else "review"
+    group="writing" if data.task_type=="generate_chapter" else "outline" if data.task_type in {"generate_outline","improve_outline","plan_chapters","derive_story_plan","suggest_outline","improve_chapter_outline"} else "review"
     override=getattr(novel,f"{group}_temperature_override")
     temperature=data.temperature if data.temperature is not None else (override if override is not None else (config.default_temperature if config else 0.7))
     max_tokens=data.max_output_tokens if data.max_output_tokens is not None else (config.max_output_tokens if config else None)
@@ -313,8 +313,11 @@ async def improve_outline(novel_id: int, data: schemas.ImproveOutlineRequest, db
 @app.post("/api/novels/{novel_id}/ai/apply-outline-improvement")
 def apply_outline_improvement(novel_id: int, data: schemas.ApplyOutlineImprovementRequest, db: Session = Depends(get_db)):
     novel = novel_or_404(novel_id, db)
-    if data.master_outline is not None and data.master_outline != novel.master_outline:
-        save_outline_snapshot(db, novel, "before_ai_improvement"); novel.master_outline = data.master_outline
+    # A missing/empty `content` field is a common partial LLM response.  Never let
+    # it erase a user's already-saved master outline when they apply chapter rows.
+    incoming_outline = data.master_outline.strip() if isinstance(data.master_outline, str) else None
+    if incoming_outline and incoming_outline != novel.master_outline:
+        save_outline_snapshot(db, novel, "before_ai_improvement"); novel.master_outline = incoming_outline
     applied, skipped = [], []
     selected = set(data.apply_chapter_numbers if data.apply_chapter_numbers is not None else [int(row.get("chapter_number", row.get("sequence", -1))) for row in data.chapters])
     existing = {chapter.sequence: chapter for chapter in db.scalars(select(models.Chapter).where(models.Chapter.novel_id == novel_id)).all()}
@@ -327,7 +330,43 @@ def apply_outline_improvement(novel_id: int, data: schemas.ApplyOutlineImproveme
             chapter.title = str(row.get("title", chapter.title)); chapter.outline = str(row.get("outline", chapter.outline)); applied.append(number)
         elif number > 0:
             db.add(models.Chapter(novel_id=novel_id, sequence=number, title=str(row.get("title", f"第{number}章")), outline=str(row.get("outline", "")), status="draft")); applied.append(number)
-    db.commit(); return {"applied_chapters": applied, "skipped_confirmed_chapters": skipped}
+    db.commit(); return {"applied_chapters": applied, "skipped_confirmed_chapters": skipped, "master_outline_preserved": bool(data.master_outline is not None and not incoming_outline)}
+
+@app.post("/api/novels/{novel_id}/ai/apply-story-plan")
+def apply_story_plan(novel_id: int, data: schemas.ApplyStoryPlanRequest, db: Session = Depends(get_db)):
+    """Persist an outline-derived plan as editable drafts, never as canon."""
+    novel_or_404(novel_id, db)
+    events_created, arcs_created = 0, 0
+    for raw in data.timeline_events:
+        item = raw if isinstance(raw, dict) else {"content": str(raw)}
+        content = str(item.get("content") or item.get("event") or "").strip()
+        if not content:
+            continue
+        db.add(models.TimelineEvent(
+            novel_id=novel_id,
+            time_description=str(item.get("time_description") or item.get("chapter_range") or "章节规划").strip(),
+            location=str(item.get("location") or "待确定").strip(),
+            content=content,
+            participants=str(item.get("participants") or "").strip(),
+            confirmed=False,
+        ))
+        events_created += 1
+    for raw in data.character_arcs:
+        item = raw if isinstance(raw, dict) else {"arc": str(raw)}
+        name = str(item.get("name") or item.get("character") or "未指明人物").strip()
+        arc = str(item.get("arc") or item.get("arc_or_growth") or item.get("content") or "").strip()
+        turning_points = item.get("turning_points") or item.get("key_turning_points") or []
+        if isinstance(turning_points, list):
+            turns = "；".join(str(point).strip() for point in turning_points if str(point).strip())
+        else:
+            turns = str(turning_points).strip()
+        if not arc:
+            continue
+        detail = f"{name}：{arc}" + (f"\n关键转折：{turns}" if turns else "")
+        db.add(models.CanonFact(novel_id=novel_id, fact_type="character_arc", content=detail, status="draft"))
+        arcs_created += 1
+    db.commit()
+    return {"timeline_events_created": events_created, "character_arcs_created": arcs_created, "message": "已保存为草稿；确认后才会作为后续创作的强约束。"}
 
 @app.post("/api/novels/{novel_id}/ai/plan-chapters")
 async def plan_chapters(novel_id: int, data: schemas.PlanChaptersRequest, db: Session = Depends(get_db)):
