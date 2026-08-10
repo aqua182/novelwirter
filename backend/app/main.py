@@ -206,6 +206,12 @@ def restore_outline_revision(novel_id: int, revision_id: int, db: Session = Depe
     novel = novel_or_404(novel_id, db); revision = scoped_or_404(models.OutlineRevision, novel_id, revision_id, db)
     save_outline_snapshot(db, novel, "before_restore"); novel.master_outline = revision.content; db.commit(); db.refresh(novel); return novel
 
+@app.delete("/api/novels/{novel_id}/outline-revisions/{revision_id}", status_code=204)
+def delete_outline_revision(novel_id: int, revision_id: int, db: Session = Depends(get_db)):
+    novel_or_404(novel_id, db)
+    revision = scoped_or_404(models.OutlineRevision, novel_id, revision_id, db)
+    db.delete(revision); db.commit()
+
 
 @app.get("/api/novels/{novel_id}/chapters", response_model=list[schemas.ChapterRead])
 def chapters(novel_id: int, db: Session = Depends(get_db)):
