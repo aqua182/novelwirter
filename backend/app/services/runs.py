@@ -73,7 +73,8 @@ async def run_stream(db: Session, novel: models.Novel, run: models.AgentRun, res
         run.status = "running"; db.commit(); record_event(db, run, "tool", {"message":"已读取小说设定、人物状态与相关记忆"}); yield event(run, "tool", {"message":"已读取小说设定、人物状态与相关记忆"})
         yield event(run, "status", {"stage":"running","message":"正在生成内容"})
         output = run.partial_output if resume else ""
-        async for delta in DeepSeekProvider().stream([{"role":"system","content":"你是严谨的中文小说创作助手。遵循已确认设定；只提供任务所要求的输出。"},{"role":"user","content":context + "\n" + prompt}], get_settings().deepseek_model):
+        provider = DeepSeekProvider()
+        async for delta in provider.stream([{"role":"system","content":"你是严谨的中文小说创作助手。遵循已确认设定；只提供任务所要求的输出。"},{"role":"user","content":context + "\n" + prompt}], get_settings().deepseek_model):
             db.refresh(run)
             if run.status in {"cancelled", "paused"}:
                 record_event(db, run, "status", {"stage":run.status,"message":"任务已由用户停止，草稿已保留"}); yield event(run,"done",{"status":run.status,"message":"已保留当前草稿"}); return
@@ -82,7 +83,11 @@ async def run_stream(db: Session, novel: models.Novel, run: models.AgentRun, res
             run.partial_output = output; db.commit()
         run.partial_output = output
         result = parse_json_response(output) if expects_json else {"content": output}
-        run.result = result; run.status = "completed"; run.completed_at = now(); db.add(models.TokenUsage(novel_id=novel.id, chapter_id=run.chapter_id, run_id=run.id, task_type=run.task_type, model_name=run.model_name, input_tokens_estimated=context_data["estimated_tokens"], context_budget=context_data["token_budget"], compressed=bool(context_data["compressed_items"]), compressed_token_savings=0, output_tokens_actual=estimate_tokens(output), total_tokens=context_data["estimated_tokens"] + estimate_tokens(output))); db.commit()
+        usage = provider.last_usage or {}
+        input_actual = usage.get("prompt_tokens")
+        output_actual = usage.get("completion_tokens") or estimate_tokens(output)
+        total_actual = usage.get("total_tokens") or ((input_actual or context_data["estimated_tokens"]) + output_actual)
+        run.result = result; run.status = "completed"; run.completed_at = now(); db.add(models.TokenUsage(novel_id=novel.id, chapter_id=run.chapter_id, run_id=run.id, task_type=run.task_type, model_name=run.model_name, input_tokens_estimated=context_data["estimated_tokens"], input_tokens_actual=input_actual, context_budget=context_data["token_budget"], compressed=bool(context_data["compressed_items"]), compressed_token_savings=0, output_tokens_actual=output_actual, total_tokens=total_actual)); db.commit()
         record_event(db, run, "result", {"message":"AI 任务已完成"}); yield event(run, "result", result); yield event(run, "done", {"status":"completed"})
     except asyncio.CancelledError:
         run.status = "interrupted"; db.commit(); record_event(db, run, "status", {"stage":"interrupted","message":"连接中断，已保留可恢复草稿"}); raise

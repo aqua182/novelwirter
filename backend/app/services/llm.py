@@ -14,6 +14,7 @@ class LLMProvider:
 class DeepSeekProvider(LLMProvider):
     def __init__(self):
         self.settings = get_settings()
+        self.last_usage: dict | None = None
 
     def _headers(self):
         if not self.settings.deepseek_api_key:
@@ -35,7 +36,7 @@ class DeepSeekProvider(LLMProvider):
             raise RuntimeError("DeepSeek 返回了无法读取的响应。") from exc
 
     async def stream(self, messages, model, temperature=0.8):
-        payload = {"model": model, "messages": messages, "temperature": temperature, "stream": True}
+        payload = {"model": model, "messages": messages, "temperature": temperature, "stream": True, "stream_options": {"include_usage": True}}
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(120, connect=20)) as client:
                 async with client.stream("POST", f"{self.settings.deepseek_base_url.rstrip('/')}/chat/completions", headers=self._headers(), json=payload) as response:
@@ -47,7 +48,10 @@ class DeepSeekProvider(LLMProvider):
                         if raw == "[DONE]":
                             return
                         try:
-                            delta = json.loads(raw)["choices"][0]["delta"].get("content", "")
+                            chunk = json.loads(raw)
+                            if chunk.get("usage"): self.last_usage = chunk["usage"]
+                            choices = chunk.get("choices", [])
+                            delta = choices[0]["delta"].get("content", "") if choices else ""
                         except (KeyError, IndexError, TypeError, json.JSONDecodeError):
                             continue
                         if delta:
@@ -66,4 +70,3 @@ def parse_json_response(content: str) -> dict:
         return json.loads(cleaned)
     except json.JSONDecodeError as exc:
         raise ValueError("模型没有返回合法 JSON，请重试或调整要求。") from exc
-
