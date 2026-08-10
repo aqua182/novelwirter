@@ -111,7 +111,9 @@ def task_prompt(db: Session, novel: models.Novel, run: models.AgentRun) -> tuple
 【章节规划】\n{chapter_plan}
 请覆盖完整故事阶段，提炼 8–24 条时间线事件，并为每位主要人物（尤其主角）给出成长弧和关键转折。返回 {{\"timeline_events\":[{{\"time_description\":\"第1–3章/某阶段\",\"location\":\"地点或待确定\",\"content\":\"事件与因果\",\"participants\":\"人物\"}}],\"character_arcs\":[{{\"name\":\"人物名\",\"arc\":\"起点→转折→终点的成长弧\",\"turning_points\":[\"第X章：…\"]}}]}}。""", True
     if task == "extract_memory":
-        return context, f"从第{chapter.sequence}章正文提取结构化记忆。正文：{chapter.content}\n返回 {{\"summary\":\"...\",\"key_events\":[\"...\"],\"foreshadowing\":[\"...\"],\"unresolved_conflicts\":[\"...\"],\"timeline_events\":[],\"facts\":[]}}。", True
+        return context, f"""从第{chapter.sequence}章正文提取可编辑的结构化记忆。正文：{chapter.content}
+必须逐项依据正文，不得虚构。正文出现具体事件、人物状态变化、关系变化、时间或地点时：timeline_events 与 facts 均不得返回空数组；至少各提取 1 条，通常提取 3–8 条。每条 timeline_event 要写清时间描述（可写“第{chapter.sequence}章/某年”）、地点（未知则写“待确定”）、事件内容和参与人物；每条 fact 要写 fact_type（character_state|relationship|world|plot）与可独立理解的内容。只有正文确实没有任何可提取事件或事实时才允许返回空数组。
+不要把整段正文复制进 summary；key_events 也必须列出具体事件。只返回 JSON：{{"summary":"...","key_events":["..."],"foreshadowing":["..."],"unresolved_conflicts":["..."],"timeline_events":[{{"time_description":"","location":"","content":"","participants":""}}],"facts":[{{"fact_type":"character_state|relationship|world|plot","content":"..."}}]}}。""", True
     raise ValueError(f"不支持的任务类型：{task}")
 
 def snapshot_context(db: Session, novel: models.Novel, run: models.AgentRun, context: str, prompt: str) -> tuple[models.ContextSnapshot, dict]:
