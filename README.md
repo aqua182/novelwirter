@@ -15,6 +15,7 @@
 - 安全删除：书架可删除小说；章节列表和编辑器可删除章节。两者均有确认提示，章节删除会清理直接关联数据并重排后续章节。
 - 可恢复 Agent 运行：生成大纲、改进大纲、章节建议、章节正文和校验通过统一 SSE 流发送执行进度、上下文构成、压缩警告与最终结果。页面刷新或中断后可查看运行记录，并从保留的正文草稿继续生成。
 - Token 可观测性：每次可恢复运行会记录上下文预算、估算 Token、输出 Token 与压缩状态。界面显示当前上下文构成和安全提示。
+- 用户模型设置：可配置多个 OpenAI 兼容模型（包括 DeepSeek），每个本地开发用户只能看到和使用自己的配置。Key 仅在后端以 Fernet 密文保存，界面只显示掩码。
 - 后端 AI Provider 独立封装，DeepSeek 密钥只由后端 `.env` 读取。
 
 ## 启动
@@ -29,6 +30,11 @@
    ```
 
    编辑 `.env`，填入你的 `DEEPSEEK_API_KEY`。未填密钥时，书架、编辑和本地数据库功能仍可使用；AI 功能会给出清晰错误提示。
+   如需使用“模型设置”中的自定义模型，还必须设置 `MODEL_CONFIG_ENCRYPTION_KEY`。可用下列命令生成：
+
+   ```bash
+   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+   ```
 
 2. 启动后端：
 
@@ -70,6 +76,7 @@ DATABASE_URL=postgresql+psycopg://user:password@localhost/novelwriter
 6. 点击“确认章节”，系统会提取摘要、时间线与事实草稿。通过 API 可编辑、确认或忽略这些条目。
 7. 点击“校验章节”查看结构化矛盾提示和修改建议。
 8. 生成期间，右侧的“Agent 运行”面板会显示安全的执行进度、上下文构成及压缩记录；可停止并保留草稿。刷新页面后，如运行被中断，可点击“从中断处恢复”。
+9. 从书架或工作台打开“模型设置”，添加 API Base URL、API Key 和模型名称。默认支持 HTTPS OpenAI 兼容接口；开发环境如需 localhost HTTP，需显式设置 `ALLOW_LOCAL_MODEL_URLS=true`。选择已启用模型和 Temperature 后，本次选择仅用于当前生成；可点击“设为小说默认模型”。
 
 ## API 概览
 
@@ -82,6 +89,7 @@ DATABASE_URL=postgresql+psycopg://user:password@localhost/novelwriter
 - `/api/novels/{novel_id}/agent-runs/stream`：统一 SSE Agent 运行入口。请求体包含 `task_type`、可选 `chapter_id` 和 `input`。
 - `/api/agent-runs/{run_id}`、`/events`、`/resume/stream`、`/cancel`：运行记录、进度审计、恢复和停止。
 - `/api/novels/{novel_id}/token-usage`：小说级 Token 使用汇总。
+- `/api/model-configs`：当前本地开发用户自己的模型配置；支持新建、编辑、删除和连接测试。所有按 ID 操作都会校验 `X-User-ID`（未传时为 `local-user`）。
 
 ## 可恢复运行与上下文压缩
 

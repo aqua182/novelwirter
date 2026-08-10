@@ -18,6 +18,12 @@ class Novel(Timestamped, Base):
     target_words: Mapped[int | None] = mapped_column(Integer, nullable=True)
     default_style: Mapped[str | None] = mapped_column(Text, nullable=True)
     master_outline: Mapped[str] = mapped_column(Text, default="")
+    default_writing_model_config_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    default_outline_model_config_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    default_review_model_config_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    writing_temperature_override: Mapped[float | None] = mapped_column(nullable=True)
+    outline_temperature_override: Mapped[float | None] = mapped_column(nullable=True)
+    review_temperature_override: Mapped[float | None] = mapped_column(nullable=True)
 
 
 class OutlineNode(Timestamped, Base):
@@ -135,6 +141,11 @@ class AgentRun(Timestamped, Base):
     result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     model_name: Mapped[str] = mapped_column(String(100))
+    model_config_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    provider_type: Mapped[str] = mapped_column(String(50), default="deepseek")
+    api_base_url_label: Mapped[str] = mapped_column(String(255), default="")
+    temperature: Mapped[float] = mapped_column(default=0.7)
+    max_output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
@@ -181,3 +192,22 @@ class TokenUsage(Base):
     compressed: Mapped[bool] = mapped_column(Boolean, default=False)
     compressed_token_savings: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ModelConfig(Timestamped, Base):
+    __tablename__ = "model_configs"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(100), index=True)
+    display_name: Mapped[str] = mapped_column(String(120))
+    provider_type: Mapped[str] = mapped_column(String(50), default="openai_compatible")
+    api_base_url: Mapped[str] = mapped_column(String(500))
+    api_key_encrypted: Mapped[str] = mapped_column(Text)
+    model_id: Mapped[str] = mapped_column(String(200))
+    default_temperature: Mapped[float] = mapped_column(default=0.7)
+    max_output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+    supported_tasks: Mapped[list] = mapped_column(JSON, default=list)
+    last_tested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_test_status: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    last_test_message: Mapped[str | None] = mapped_column(String(300), nullable=True)

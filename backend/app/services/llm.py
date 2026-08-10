@@ -5,9 +5,9 @@ from ..config import get_settings
 
 
 class LLMProvider:
-    async def generate(self, messages: list[dict], model: str, temperature: float = 0.7, response_format: dict | None = None) -> str:
+    async def generate(self, messages: list[dict], model: str, temperature: float = 0.7, response_format: dict | None = None, max_output_tokens: int | None = None) -> str:
         raise NotImplementedError
-    async def stream(self, messages: list[dict], model: str, temperature: float = 0.8) -> AsyncGenerator[str, None]:
+    async def stream(self, messages: list[dict], model: str, temperature: float = 0.8, max_output_tokens: int | None = None) -> AsyncGenerator[str, None]:
         raise NotImplementedError
 
 
@@ -35,8 +35,9 @@ class DeepSeekProvider(LLMProvider):
         except (KeyError, ValueError, TypeError) as exc:
             raise RuntimeError("DeepSeek 返回了无法读取的响应。") from exc
 
-    async def stream(self, messages, model, temperature=0.8):
+    async def stream(self, messages, model, temperature=0.8, max_output_tokens=None):
         payload = {"model": model, "messages": messages, "temperature": temperature, "stream": True, "stream_options": {"include_usage": True}}
+        if max_output_tokens: payload["max_tokens"] = max_output_tokens
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(120, connect=20)) as client:
                 async with client.stream("POST", f"{self.settings.deepseek_base_url.rstrip('/')}/chat/completions", headers=self._headers(), json=payload) as response:
@@ -58,6 +59,42 @@ class DeepSeekProvider(LLMProvider):
                             yield delta
         except httpx.HTTPError as exc:
             raise RuntimeError(f"DeepSeek 流式请求失败：{exc}") from exc
+
+
+class OpenAICompatibleProvider(LLMProvider):
+    """Provider created from a user-owned, encrypted ModelConfig."""
+    def __init__(self, api_base_url: str, api_key: str):
+        self.api_base_url = api_base_url.rstrip("/")
+        self.api_key = api_key
+        self.last_usage: dict | None = None
+
+    def _payload(self, messages, model, temperature, stream=False, response_format=None, max_output_tokens=None):
+        payload={"model":model,"messages":messages,"temperature":temperature,"stream":stream}
+        if max_output_tokens: payload["max_tokens"]=max_output_tokens
+        if stream: payload["stream_options"]={"include_usage":True}
+        if response_format: payload["response_format"]=response_format
+        return payload
+    def _headers(self): return {"Authorization":f"Bearer {self.api_key}","Content-Type":"application/json"}
+    async def generate(self,messages,model,temperature=0.7,response_format=None,max_output_tokens=None):
+        try:
+            async with httpx.AsyncClient(timeout=45) as client:
+                response=await client.post(f"{self.api_base_url}/chat/completions",headers=self._headers(),json=self._payload(messages,model,temperature,response_format=response_format,max_output_tokens=max_output_tokens));response.raise_for_status();body=response.json();self.last_usage=body.get("usage");return body["choices"][0]["message"]["content"]
+        except httpx.HTTPError as exc: raise RuntimeError("模型连接失败，请检查 API URL、模型名称或 Key") from exc
+        except (KeyError,ValueError,TypeError) as exc: raise RuntimeError("模型返回了无法读取的响应") from exc
+    async def stream(self,messages,model,temperature=0.8,max_output_tokens=None):
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(120,connect=20)) as client:
+                async with client.stream("POST",f"{self.api_base_url}/chat/completions",headers=self._headers(),json=self._payload(messages,model,temperature,stream=True,max_output_tokens=max_output_tokens)) as response:
+                    response.raise_for_status()
+                    async for line in response.aiter_lines():
+                        if not line.startswith("data: "): continue
+                        raw=line[6:]
+                        if raw=="[DONE]": return
+                        try:
+                            chunk=json.loads(raw);self.last_usage=chunk.get("usage") or self.last_usage;choices=chunk.get("choices",[]);delta=choices[0]["delta"].get("content","") if choices else ""
+                        except (KeyError,IndexError,TypeError,json.JSONDecodeError): continue
+                        if delta: yield delta
+        except httpx.HTTPError as exc: raise RuntimeError("模型连接失败，请检查 API URL、模型名称或 Key") from exc
 
 
 def parse_json_response(content: str) -> dict:

@@ -2,7 +2,7 @@ import asyncio
 import json
 import uuid
 from collections.abc import Generator
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from sqlalchemy import inspect, text, func, select
@@ -13,6 +13,8 @@ from . import models, schemas
 from .services.context import build_chapter_context, build_story_context
 from .services.llm import DeepSeekProvider, parse_json_response
 from .services.runs import run_stream
+from .services.llm import OpenAICompatibleProvider
+from .services.model_configs import current_user_id, decrypt_key, encrypt_key, mark_test, owned_config_or_404, read_config, resolve_model_config, safe_url_label, validate_base_url
 
 Base.metadata.create_all(bind=engine)
 
@@ -25,6 +27,16 @@ def run_lightweight_migrations():
     with engine.begin() as conn:
         for name, definition in additions.items():
             if name not in existing: conn.execute(text(f"ALTER TABLE characters ADD COLUMN {name} {definition}"))
+        table_additions = {
+            "novels": {"default_writing_model_config_id":"VARCHAR(36)","default_outline_model_config_id":"VARCHAR(36)","default_review_model_config_id":"VARCHAR(36)","writing_temperature_override":"FLOAT","outline_temperature_override":"FLOAT","review_temperature_override":"FLOAT"},
+            "agent_runs": {"model_config_id":"VARCHAR(36)","provider_type":"VARCHAR(50) DEFAULT 'deepseek'","api_base_url_label":"VARCHAR(255) DEFAULT ''","temperature":"FLOAT DEFAULT 0.7","max_output_tokens":"INTEGER"},
+        }
+        existing_tables=set(inspector.get_table_names())
+        for table, columns in table_additions.items():
+            if table not in existing_tables: continue
+            have={column["name"] for column in inspector.get_columns(table)}
+            for name, definition in columns.items():
+                if name not in have: conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {definition}"))
 run_lightweight_migrations()
 app = FastAPI(title="NovelWriter API", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=get_settings().cors_origin_list, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
@@ -54,6 +66,41 @@ def save_outline_snapshot(db: Session, novel: models.Novel, reason: str):
 @app.get("/health")
 def health(): return {"ok": True}
 
+@app.get("/api/model-configs", response_model=list[schemas.ModelConfigRead])
+def list_model_configs(x_user_id: str | None = Header(default=None), db: Session = Depends(get_db)):
+    user_id=current_user_id(x_user_id)
+    return [read_config(x) for x in db.scalars(select(models.ModelConfig).where(models.ModelConfig.user_id == user_id).order_by(models.ModelConfig.updated_at.desc())).all()]
+
+@app.post("/api/model-configs", response_model=schemas.ModelConfigRead, status_code=201)
+def create_model_config(data: schemas.ModelConfigCreate, x_user_id: str | None = Header(default=None), db: Session = Depends(get_db)):
+    user_id=current_user_id(x_user_id); base=validate_base_url(data.api_base_url)
+    if data.is_default: db.query(models.ModelConfig).filter_by(user_id=user_id, is_default=True).update({"is_default":False})
+    item=models.ModelConfig(id=str(uuid.uuid4()),user_id=user_id,display_name=data.display_name,provider_type=data.provider_type,api_base_url=base,api_key_encrypted=encrypt_key(data.api_key),model_id=data.model_id,default_temperature=data.default_temperature,max_output_tokens=data.max_output_tokens,enabled=data.enabled,is_default=data.is_default,supported_tasks=data.supported_tasks)
+    db.add(item);db.commit();db.refresh(item);return read_config(item)
+
+@app.patch("/api/model-configs/{config_id}", response_model=schemas.ModelConfigRead)
+def update_model_config(config_id: str, data: schemas.ModelConfigUpdate, x_user_id: str | None = Header(default=None), db: Session = Depends(get_db)):
+    user_id=current_user_id(x_user_id); item=owned_config_or_404(db,config_id,user_id); values=data.model_dump(exclude_unset=True)
+    if "api_base_url" in values: values["api_base_url"]=validate_base_url(values["api_base_url"])
+    if "api_key" in values: values["api_key_encrypted"]=encrypt_key(values.pop("api_key"))
+    if values.get("is_default"):
+        db.query(models.ModelConfig).filter_by(user_id=user_id,is_default=True).update({"is_default":False})
+    update_entity(item,values);db.commit();db.refresh(item);return read_config(item)
+
+@app.delete("/api/model-configs/{config_id}")
+def delete_model_config(config_id: str, x_user_id: str | None = Header(default=None), db: Session = Depends(get_db)):
+    item=owned_config_or_404(db,config_id,current_user_id(x_user_id));db.delete(item);db.commit();return {"deleted":config_id}
+
+@app.post("/api/model-configs/{config_id}/test", response_model=schemas.ModelConfigRead)
+async def test_model_config(config_id: str, x_user_id: str | None = Header(default=None), db: Session = Depends(get_db)):
+    item=owned_config_or_404(db,config_id,current_user_id(x_user_id))
+    try:
+        provider=OpenAICompatibleProvider(item.api_base_url,decrypt_key(item.api_key_encrypted));await provider.generate([{"role":"user","content":"Reply with OK."}],item.model_id,0,max_output_tokens=8)
+        mark_test(item,"success","连接成功")
+    except Exception:
+        mark_test(item,"failed","模型连接失败，请检查 API URL、模型名称或 Key")
+    db.commit();db.refresh(item);return read_config(item)
+
 
 def run_or_404(run_id: str, db: Session) -> models.AgentRun:
     item = db.get(models.AgentRun, run_id)
@@ -75,14 +122,21 @@ def get_agent_run_events(run_id: str, db: Session = Depends(get_db)):
     run_or_404(run_id, db); return db.scalars(select(models.AgentRunEvent).where(models.AgentRunEvent.run_id == run_id).order_by(models.AgentRunEvent.sequence)).all()
 
 @app.post("/api/novels/{novel_id}/agent-runs/stream")
-async def start_agent_run(novel_id: int, data: schemas.AgentRunCreate, db: Session = Depends(get_db)):
+async def start_agent_run(novel_id: int, data: schemas.AgentRunCreate, x_user_id: str | None = Header(default=None), db: Session = Depends(get_db)):
     novel = novel_or_404(novel_id, db)
     if data.chapter_id: scoped_or_404(models.Chapter, novel_id, data.chapter_id, db)
     supported = {"generate_outline", "improve_outline", "plan_chapters", "suggest_outline", "improve_chapter_outline", "generate_chapter", "extract_memory", "validate_chapter"}
     if data.task_type not in supported: raise HTTPException(422, "不支持的 Agent 任务类型")
-    run = models.AgentRun(id=str(uuid.uuid4()), novel_id=novel.id, chapter_id=data.chapter_id, task_type=data.task_type, input_snapshot=data.input, model_name=get_settings().deepseek_model, status="queued")
+    user_id=current_user_id(x_user_id)
+    config=resolve_model_config(db,user_id,novel,data.task_type,data.model_config_id)
+    group="writing" if data.task_type=="generate_chapter" else "outline" if data.task_type in {"generate_outline","improve_outline","plan_chapters","suggest_outline","improve_chapter_outline"} else "review"
+    override=getattr(novel,f"{group}_temperature_override")
+    temperature=data.temperature if data.temperature is not None else (override if override is not None else (config.default_temperature if config else 0.7))
+    max_tokens=data.max_output_tokens if data.max_output_tokens is not None else (config.max_output_tokens if config else None)
+    provider=OpenAICompatibleProvider(config.api_base_url,decrypt_key(config.api_key_encrypted)) if config else DeepSeekProvider()
+    run = models.AgentRun(id=str(uuid.uuid4()), novel_id=novel.id, chapter_id=data.chapter_id, task_type=data.task_type, input_snapshot=data.input, model_name=config.model_id if config else get_settings().deepseek_model, model_config_id=config.id if config else None, provider_type=config.provider_type if config else "deepseek", api_base_url_label=safe_url_label(config.api_base_url) if config else "deepseek", temperature=temperature, max_output_tokens=max_tokens, status="queued")
     db.add(run); db.commit(); db.refresh(run)
-    return StreamingResponse(run_stream(db, novel, run), media_type="text/event-stream", headers={"Cache-Control":"no-cache", "X-Accel-Buffering":"no"})
+    return StreamingResponse(run_stream(db, novel, run, provider=provider), media_type="text/event-stream", headers={"Cache-Control":"no-cache", "X-Accel-Buffering":"no"})
 
 @app.post("/api/agent-runs/{run_id}/cancel")
 def cancel_agent_run(run_id: str, db: Session = Depends(get_db)):
@@ -91,12 +145,15 @@ def cancel_agent_run(run_id: str, db: Session = Depends(get_db)):
     run.status = "cancelled"; db.commit(); record = models.AgentRunEvent(run_id=run.id, sequence=(db.scalar(select(func.max(models.AgentRunEvent.sequence)).where(models.AgentRunEvent.run_id == run.id)) or 0)+1, event_type="status", payload={"stage":"cancelled","message":"用户停止了运行，当前草稿已保留"}); db.add(record); db.commit(); return {"id":run.id,"status":run.status,"partial_output":run.partial_output}
 
 @app.post("/api/agent-runs/{run_id}/resume/stream")
-async def resume_agent_run(run_id: str, db: Session = Depends(get_db)):
+async def resume_agent_run(run_id: str, x_user_id: str | None = Header(default=None), db: Session = Depends(get_db)):
     run = run_or_404(run_id, db); novel = novel_or_404(run.novel_id, db)
     if run.status not in {"interrupted", "cancelled", "failed", "paused"}: raise HTTPException(409, "仅中断、暂停、失败或取消的运行可恢复")
     if not run.partial_output and run.task_type == "generate_chapter": raise HTTPException(409, "没有可恢复的正文草稿，请重新从头生成")
+    config=owned_config_or_404(db,run.model_config_id,current_user_id(x_user_id)) if run.model_config_id else None
+    if config and not config.enabled: raise HTTPException(422,"原模型已停用，请选择其他模型后重新生成")
+    provider=OpenAICompatibleProvider(config.api_base_url,decrypt_key(config.api_key_encrypted)) if config else DeepSeekProvider()
     run.status = "queued"; run.error_message = None; db.commit()
-    return StreamingResponse(run_stream(db, novel, run, resume=True), media_type="text/event-stream", headers={"Cache-Control":"no-cache", "X-Accel-Buffering":"no"})
+    return StreamingResponse(run_stream(db, novel, run, provider=provider, resume=True), media_type="text/event-stream", headers={"Cache-Control":"no-cache", "X-Accel-Buffering":"no"})
 
 @app.get("/api/novels/{novel_id}/token-usage")
 def token_usage(novel_id: int, db: Session = Depends(get_db)):
@@ -116,8 +173,11 @@ def create_novel(data: schemas.NovelCreate, db: Session = Depends(get_db)):
 def get_novel(novel_id: int, db: Session = Depends(get_db)): return novel_or_404(novel_id, db)
 
 @app.patch("/api/novels/{novel_id}", response_model=schemas.NovelRead)
-def update_novel(novel_id: int, data: schemas.NovelUpdate, db: Session = Depends(get_db)):
+def update_novel(novel_id: int, data: schemas.NovelUpdate, x_user_id: str | None = Header(default=None), db: Session = Depends(get_db)):
     item = novel_or_404(novel_id, db); values = data.model_dump(exclude_unset=True)
+    user_id=current_user_id(x_user_id)
+    for field in ("default_writing_model_config_id","default_outline_model_config_id","default_review_model_config_id"):
+        if values.get(field): owned_config_or_404(db,values[field],user_id)
     if "master_outline" in values and values["master_outline"] != item.master_outline: save_outline_snapshot(db, item, "manual_save")
     update_entity(item, values); db.commit(); db.refresh(item); return item
 

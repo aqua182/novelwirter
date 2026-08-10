@@ -60,7 +60,7 @@ def snapshot_context(db: Session, novel: models.Novel, run: models.AgentRun, con
     db.add(snapshot); run.context_snapshot_id = snapshot.id; db.commit()
     return snapshot, {"included_items": ["已确认主角设定", "已确认世界观与时间线", "当前章节要求", "最近两章内容", "相关历史摘要"], "compressed_items": compressed, "estimated_tokens": estimated, "token_budget": settings.context_token_budget, "warnings": warnings}
 
-async def run_stream(db: Session, novel: models.Novel, run: models.AgentRun, resume: bool = False) -> AsyncGenerator[str, None]:
+async def run_stream(db: Session, novel: models.Novel, run: models.AgentRun, provider=None, resume: bool = False) -> AsyncGenerator[str, None]:
     try:
         run.status = "building_context"; db.commit(); record_event(db, run, "status", {"stage":"building_context","message":"正在整理主要主角、时间线和最近章节内容"})
         yield event(run, "status", {"stage":"building_context","message":"正在整理主要主角、时间线和最近章节内容"})
@@ -73,8 +73,8 @@ async def run_stream(db: Session, novel: models.Novel, run: models.AgentRun, res
         run.status = "running"; db.commit(); record_event(db, run, "tool", {"message":"已读取小说设定、人物状态与相关记忆"}); yield event(run, "tool", {"message":"已读取小说设定、人物状态与相关记忆"})
         yield event(run, "status", {"stage":"running","message":"正在生成内容"})
         output = run.partial_output if resume else ""
-        provider = DeepSeekProvider()
-        async for delta in provider.stream([{"role":"system","content":"你是严谨的中文小说创作助手。遵循已确认设定；只提供任务所要求的输出。"},{"role":"user","content":context + "\n" + prompt}], get_settings().deepseek_model):
+        provider = provider or DeepSeekProvider()
+        async for delta in provider.stream([{"role":"system","content":"你是严谨的中文小说创作助手。遵循已确认设定；只提供任务所要求的输出。"},{"role":"user","content":context + "\n" + prompt}], run.model_name, run.temperature, run.max_output_tokens):
             db.refresh(run)
             if run.status in {"cancelled", "paused"}:
                 record_event(db, run, "status", {"stage":run.status,"message":"任务已由用户停止，草稿已保留"}); yield event(run,"done",{"status":run.status,"message":"已保留当前草稿"}); return
@@ -83,7 +83,7 @@ async def run_stream(db: Session, novel: models.Novel, run: models.AgentRun, res
             run.partial_output = output; db.commit()
         run.partial_output = output
         result = parse_json_response(output) if expects_json else {"content": output}
-        usage = provider.last_usage or {}
+        usage = getattr(provider, "last_usage", None) or {}
         input_actual = usage.get("prompt_tokens")
         output_actual = usage.get("completion_tokens") or estimate_tokens(output)
         total_actual = usage.get("total_tokens") or ((input_actual or context_data["estimated_tokens"]) + output_actual)

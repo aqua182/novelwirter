@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:5173"
     context_token_budget: int = 20000
     context_warning_threshold: float = 0.7
+    model_config_encryption_key: str = ""
+    allow_local_model_urls: bool = False
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property
