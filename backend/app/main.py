@@ -256,9 +256,24 @@ def delete_outline_revision(novel_id: int, revision_id: int, db: Session = Depen
 def chapters(novel_id: int, db: Session = Depends(get_db)):
     novel_or_404(novel_id, db); return db.scalars(select(models.Chapter).where(models.Chapter.novel_id == novel_id).order_by(models.Chapter.sequence)).all()
 
+def normalize_chapter_sequences(db: Session, novel_id: int):
+    """Keep a novel's visible chapter numbers contiguous and deterministic."""
+    chapters = db.scalars(select(models.Chapter).where(models.Chapter.novel_id == novel_id).order_by(models.Chapter.sequence, models.Chapter.id)).all()
+    for sequence, chapter in enumerate(chapters, 1):
+        chapter.sequence = sequence
+    return chapters
+
+def next_chapter_sequence(db: Session, novel_id: int) -> int:
+    return (db.scalar(select(func.max(models.Chapter.sequence)).where(models.Chapter.novel_id == novel_id)) or 0) + 1
+
 @app.post("/api/novels/{novel_id}/chapters", response_model=schemas.ChapterRead, status_code=201)
 def create_chapter(novel_id: int, data: schemas.ChapterCreate, db: Session = Depends(get_db)):
-    novel_or_404(novel_id, db); item = models.Chapter(novel_id=novel_id, **data.model_dump()); item.actual_words = word_count(item.content); db.add(item); db.commit(); db.refresh(item); return item
+    novel_or_404(novel_id, db)
+    requested = data.sequence if data.sequence > 0 else next_chapter_sequence(db, novel_id)
+    if db.scalar(select(models.Chapter.id).where(models.Chapter.novel_id == novel_id, models.Chapter.sequence == requested)):
+        requested = next_chapter_sequence(db, novel_id)
+    item = models.Chapter(novel_id=novel_id, **{**data.model_dump(), "sequence": requested})
+    item.actual_words = word_count(item.content); db.add(item); db.commit(); db.refresh(item); return item
 
 @app.get("/api/novels/{novel_id}/chapters/{chapter_id}", response_model=schemas.ChapterRead)
 def get_chapter(novel_id: int, chapter_id: int, db: Session = Depends(get_db)): return scoped_or_404(models.Chapter, novel_id, chapter_id, db)
@@ -297,8 +312,7 @@ def delete_chapter(novel_id: int, chapter_id: int, db: Session = Depends(get_db)
     db.query(models.TokenUsage).filter_by(novel_id=novel_id, chapter_id=chapter_id).delete()
     db.query(models.AgentRun).filter_by(novel_id=novel_id, chapter_id=chapter_id).delete()
     db.delete(chapter); db.flush()
-    remaining = db.scalars(select(models.Chapter).where(models.Chapter.novel_id == novel_id).order_by(models.Chapter.sequence, models.Chapter.id)).all()
-    for sequence, item in enumerate(remaining, 1): item.sequence = sequence
+    normalize_chapter_sequences(db, novel_id)
     db.commit(); return {"deleted": chapter_id, "was_confirmed": was_confirmed, "message": "章节及其直接关联的摘要、提取数据和 AI 任务已删除。建议重新校验后续章节。"}
 
 
@@ -373,16 +387,20 @@ def apply_outline_improvement(novel_id: int, data: schemas.ApplyOutlineImproveme
         save_outline_snapshot(db, novel, "before_ai_improvement"); novel.master_outline = incoming_outline
     applied, skipped = [], []
     selected = set(data.apply_chapter_numbers if data.apply_chapter_numbers is not None else [int(row.get("chapter_number", row.get("sequence", -1))) for row in data.chapters])
+    normalize_chapter_sequences(db, novel_id)
     existing = {chapter.sequence: chapter for chapter in db.scalars(select(models.Chapter).where(models.Chapter.novel_id == novel_id)).all()}
+    processed: set[int] = set()
     for row in data.chapters:
         number = int(row.get("chapter_number", row.get("sequence", 0)))
-        if number not in selected: continue
+        if number <= 0 or number not in selected or number in processed: continue
+        processed.add(number)
         chapter = existing.get(number)
         if chapter and chapter.status == "confirmed": skipped.append(number); continue
         if chapter:
             chapter.title = str(row.get("title", chapter.title)); chapter.outline = str(row.get("outline", chapter.outline)); applied.append(number)
         elif number > 0:
-            db.add(models.Chapter(novel_id=novel_id, sequence=number, title=str(row.get("title", f"第{number}章")), outline=str(row.get("outline", "")), status="draft")); applied.append(number)
+            chapter = models.Chapter(novel_id=novel_id, sequence=number, title=str(row.get("title", f"第{number}章")), outline=str(row.get("outline", "")), status="draft")
+            db.add(chapter); existing[number] = chapter; applied.append(number)
     db.commit(); return {"applied_chapters": applied, "skipped_confirmed_chapters": skipped, "master_outline_preserved": bool(data.master_outline is not None and not incoming_outline)}
 
 @app.post("/api/novels/{novel_id}/ai/apply-story-plan")
@@ -432,13 +450,24 @@ async def plan_chapters(novel_id: int, data: schemas.PlanChaptersRequest, db: Se
 def apply_plan(novel_id: int, payload: dict, db: Session = Depends(get_db)):
     novel_or_404(novel_id, db); rows = payload.get("chapters", [])
     if not isinstance(rows, list): raise HTTPException(422, "chapters 必须是数组")
-    created = []
-    for row in rows:
-        item = models.Chapter(novel_id=novel_id, sequence=int(row.get("sequence", len(created)+1)), title=str(row.get("title", "未命名章节")), outline=str(row.get("outline", "")), target_words=row.get("target_words"), status="draft")
-        db.add(item); created.append(item)
+    normalize_chapter_sequences(db, novel_id)
+    existing = {chapter.sequence: chapter for chapter in db.scalars(select(models.Chapter).where(models.Chapter.novel_id == novel_id)).all()}
+    changed, seen = [], set()
+    for fallback, row in enumerate(rows, 1):
+        number = int(row.get("sequence", fallback) or fallback)
+        if number <= 0 or number in seen: continue
+        seen.add(number)
+        item = existing.get(number)
+        if item and item.status == "confirmed": continue
+        if item:
+            item.title = str(row.get("title", item.title)); item.outline = str(row.get("outline", item.outline)); item.target_words = row.get("target_words", item.target_words)
+        else:
+            item = models.Chapter(novel_id=novel_id, sequence=number, title=str(row.get("title", "未命名章节")), outline=str(row.get("outline", "")), target_words=row.get("target_words"), status="draft")
+            db.add(item); existing[number] = item
+        changed.append(item)
     db.commit()
-    for item in created: db.refresh(item)
-    return created
+    for item in changed: db.refresh(item)
+    return changed
 
 @app.post("/api/novels/{novel_id}/chapters/{chapter_id}/ai/suggest-outline")
 async def suggest_outline(novel_id: int, chapter_id: int, db: Session = Depends(get_db)):
