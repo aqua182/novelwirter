@@ -20,10 +20,12 @@
 
 需要 Python 3.10+ 和 Node.js 20+。
 
+以下命令均从项目根目录执行；请先进入克隆后的项目文件夹。
+
 1. 配置后端环境变量：
 
    ```bash
-   cd /Users/gaoduan/Desktop/novelwriter/backend
+   cd backend
    cp .env.example .env
    ```
 
@@ -44,7 +46,7 @@
 2. 启动后端：
 
    ```bash
-   cd /Users/gaoduan/Desktop/novelwriter/backend
+   cd backend
    python3 -m venv .venv
    source .venv/bin/activate
    pip install -r requirements.txt
@@ -54,7 +56,7 @@
 3. 在另一个终端启动前端：
 
    ```bash
-   cd /Users/gaoduan/Desktop/novelwriter/frontend
+   cd frontend
    npm install
    npm run dev
    ```
