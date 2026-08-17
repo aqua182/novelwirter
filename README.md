@@ -7,18 +7,15 @@
 - 小说书架：创建、查看和管理多本小说。
 - 三栏创作工作台：章节列表、长正文编辑、创作记忆与编审问题。
 - 总纲与章节规划：总纲可手写；DeepSeek 可生成“待确认”的总纲/章节规划，再由用户确认创建章节。
-- 大纲共创：输入自由文本改进要求后，AI 基于当前大纲、已确认主角、已确认剧情与正文事实生成预览；改进中可实时查看结构化大纲输出，章节预览每页 20 章，支持选择性应用或一键丢弃。
+- 大纲共创：输入自由文本改进要求后，AI 基于当前大纲、已确认主角、已确认剧情与正文事实生成预览；改进中可实时查看结构化大纲输出，支持选择性应用或一键丢弃。
 - 主要主角：人物可标为主要主角，记录当前位置、当前目标、情绪状态与成长弧线；已确认主角会以最高优先级带入大纲、写作与校验上下文。
-- 每书写作风格：工作台的“文风”页可为当前小说编辑完整写作风格 Prompt，并提供沉浸式叙事、克制悬疑、黑色幽默等可继续修改的预设；各书独立保存，只在章节正文生成时使用。
+- 每书写作风格：工作台的“文风”页可为当前小说编辑完整写作风格 Prompt
 - 流式输出：章节正文与大纲任务都会显示增量输出；正文随后由用户保存或确认，大纲会整理为可应用预览。
 - 结构化记忆：确认章节时生成摘要、事件与事实草稿；仅确认的人物、时间线与事实会作为后续创作的强约束。重写已确认章节后，章节会标为“已变更待确认”，旧草稿记忆显示为过期；重新确认时可预览并选择替换旧草稿，已确认时间线与事实绝不自动删除。
-- 校验 Agent：检查时间线、人物/地点/关系、设定及大纲偏离，只返回问题和建议，不改写正文。
-- 安全删除：书架可删除小说；章节列表和编辑器可删除章节。两者均有确认提示，章节删除会清理直接关联数据并重排后续章节。
-- 可恢复 Agent 运行：生成大纲、改进大纲、章节建议、章节正文和校验通过统一 SSE 流发送执行进度、上下文构成、压缩警告与最终结果。页面刷新或中断后可查看运行记录，并从保留的正文草稿继续生成。
-- 显式 Agent 角色：`WriterAgent` 与 `ValidatorAgent` 通过同一小说的持久化、`novel_id` 隔离的 Memory Service 读取不可变记忆快照；写作角色可读取文风，校验角色只读设定且不能改写正文。
-- Token 可观测性：每次可恢复运行会记录上下文预算、估算 Token、输出 Token 与压缩状态。界面显示当前上下文构成和安全提示。
-- 用户模型设置：可配置多个 OpenAI 兼容模型（包括 DeepSeek），每个本地开发用户只能看到和使用自己的配置。Key 仅在后端以 Fernet 密文保存，界面只显示掩码。
-- 后端 AI Provider 独立封装，DeepSeek 密钥只由后端 `.env` 读取。
+- 校验 Agent：检查时间线、人物/地点/关系、设定及大纲偏离，返回相应修改建议。
+- 中断恢复机制：生成大纲、改进大纲、章节建议、章节正文和校验通过统一SSE 流发送执行进度、上下文构成、压缩警告与最终结果。页面刷新或中断后可查看运行记录，并从保留的正文草稿继续生成。每次可恢复运行会记录上下文预算、估算 Token、输出 Token 与压缩状态。界面显示当前上下文构成和安全提示。
+- 用户模型设置：可配置多个 OpenAI 兼容模型
+
 
 ## 启动
 
@@ -27,21 +24,16 @@
 1. 配置后端环境变量：
 
    ```bash
-   cd /Users/gaoduan/Desktop/novelwriter/backend
+   cd /backend
    cp .env.example .env
    ```
 
-   编辑 `.env`，填入你的 `DEEPSEEK_API_KEY`。未填密钥时，书架、编辑和本地数据库功能仍可使用；AI 功能会给出清晰错误提示。
-   如需使用“模型设置”中的自定义模型，还必须设置 `MODEL_CONFIG_ENCRYPTION_KEY`。可用下列命令生成：
-
-   ```bash
-   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-   ```
+   编辑 `.env`，填入API。
 
 2. 启动后端：
 
    ```bash
-   cd /Users/gaoduan/Desktop/novelwriter/backend
+   cd /backend
    python3 -m venv .venv
    source .venv/bin/activate
    pip install -r requirements.txt
@@ -51,7 +43,7 @@
 3. 在另一个终端启动前端：
 
    ```bash
-   cd /Users/gaoduan/Desktop/novelwriter/frontend
+   cd /frontend
    npm install
    npm run dev
    ```
@@ -103,7 +95,7 @@ DATABASE_URL=postgresql+psycopg://user:password@localhost/novelwriter
 - `/api/novels/{novel_id}/agent-runs/stream`：统一 SSE Agent 运行入口。请求体包含 `task_type`、可选 `chapter_id` 和 `input`。
 - `/api/agent-runs/{run_id}`、`/events`、`/resume/stream`、`/cancel`：运行记录、进度审计、恢复和停止。
 - `/api/novels/{novel_id}/token-usage`：小说级 Token 使用汇总。
-- `/api/model-configs`：当前本地开发用户自己的模型配置；支持新建、编辑、删除和连接测试。所有按 ID 操作都会校验 `X-User-ID`（未传时为 `local-user`）。
+- `/api/model-configs`：当前本地开发用户自己的模型配置；支持新建、编辑、删除和连接测试。
 
 ## 可恢复运行与上下文压缩
 
