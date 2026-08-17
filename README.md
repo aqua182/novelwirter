@@ -23,16 +23,28 @@
 1. 配置后端环境变量：
 
    ```bash
-   cd /backend
+   cd /Users/gaoduan/Desktop/novelwriter/backend
    cp .env.example .env
    ```
 
-   编辑 `.env`，填入API。
+   本项目的模型 API Key 统一在网页“模型设置”中填写，无需写入 `.env`。请先为 `MODEL_CONFIG_ENCRYPTION_KEY` 生成一个仅保存在本机的唯一 Fernet 密钥：
+
+   ```bash
+   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+   ```
+
+   将输出内容填入 `backend/.env`：
+
+   ```env
+   MODEL_CONFIG_ENCRYPTION_KEY=粘贴上一步生成的密钥
+   ```
+
+   启动应用后，打开“模型设置”，再填写 API Base URL、模型名称和 API Key。
 
 2. 启动后端：
 
    ```bash
-   cd /backend
+   cd /Users/gaoduan/Desktop/novelwriter/backend
    python3 -m venv .venv
    source .venv/bin/activate
    pip install -r requirements.txt
@@ -42,7 +54,7 @@
 3. 在另一个终端启动前端：
 
    ```bash
-   cd /frontend
+   cd /Users/gaoduan/Desktop/novelwriter/frontend
    npm install
    npm run dev
    ```
