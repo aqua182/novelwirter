@@ -57,15 +57,6 @@ DATABASE_URL=postgresql+psycopg://user:password@localhost/novelwriter
 
 并安装 PostgreSQL 驱动，`pip install psycopg[binary]`。
 
-### 公开仓库安全说明
-
-本项目可以安全地公开发布：真实 API Key 仅保存在本地 `backend/.env` 或数据库加密字段中，仓库只保留 `backend/.env.example` 作为配置模板。`.gitignore` 已排除本地环境变量文件、SQLite 数据库、虚拟环境与构建产物。
-
-公开或推送前请确认：
-
-- 不要把真实 Key 写进 `backend/.env.example`、README、截图或提交信息；
-- 不要强制提交被 Git 忽略的 `.env`、`*.db`、`*.sqlite` 文件；
-- 如果 Key 曾经提交到任意 Git 历史或公开页面，请立即到服务商后台撤销并重新生成，而不仅是删除文件。
 
 ## 使用流程
 
