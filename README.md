@@ -50,13 +50,13 @@
 
    然后访问 <http://localhost:5173>。
 
-默认使用 `sqlite:///./novelwriter.db`。要迁移到 PostgreSQL，只需把 `DATABASE_URL` 改成类似：
+默认使用 `sqlite:///./novelwriter.db`。要迁移到 PostgreSQL，只需把 `DATABASE_URL` 改成：
 
 ```env
 DATABASE_URL=postgresql+psycopg://user:password@localhost/novelwriter
 ```
 
-并安装 PostgreSQL 驱动，例如 `pip install psycopg[binary]`。
+并安装 PostgreSQL 驱动，`pip install psycopg[binary]`。
 
 ### 公开仓库安全说明
 
