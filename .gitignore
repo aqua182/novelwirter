@@ -1,10 +1,29 @@
+# Local secrets. Commit only the tracked *.example templates.
+.env
+.env.*
+!.env.example
 backend/.env
+backend/.env.*
+!backend/.env.example
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+
+# Local runtime data and Python environments.
 backend/.venv/
-backend/novelwriter.db
+backend/*.db
+backend/*.sqlite
+backend/*.sqlite3
 backend/__pycache__/
 backend/app/__pycache__/
 backend/app/services/__pycache__/
 backend/app/agents/__pycache__/
+*.py[cod]
+
+# Frontend artifacts and local editor/system files.
 frontend/node_modules/
 frontend/dist/
 frontend/*.tsbuildinfo
+.DS_Store
+.idea/
+.vscode/
