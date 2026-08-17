@@ -1,6 +1,5 @@
 import asyncio
 import json
-import re
 import uuid
 from collections.abc import Generator
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -61,41 +60,6 @@ def update_entity(item, values: dict):
         if value is not None: setattr(item, key, value)
 
 def word_count(text: str) -> int: return len("".join(text.split()))
-
-def normalize_memory_extraction(data: dict, chapter: models.Chapter) -> dict:
-    """Keep incomplete model JSON useful as editable memory, never as confirmed canon."""
-    normalized = dict(data)
-    key_events = normalized.get("key_events") if isinstance(normalized.get("key_events"), list) else []
-    key_events = [str(item).strip() for item in key_events if str(item).strip()]
-
-    timelines: list[dict] = []
-    for item in normalized.get("timeline_events") if isinstance(normalized.get("timeline_events"), list) else []:
-        if isinstance(item, dict) and str(item.get("content", "")).strip():
-            timelines.append({key: str(item.get(key, "")).strip() for key in ("time_description", "location", "content", "participants")})
-        elif str(item).strip():
-            timelines.append({"time_description": f"第{chapter.sequence}章", "location": "待确定", "content": str(item).strip(), "participants": ""})
-
-    facts: list[dict] = []
-    for item in normalized.get("facts") if isinstance(normalized.get("facts"), list) else []:
-        if isinstance(item, dict) and str(item.get("content", "")).strip():
-            facts.append({"fact_type": str(item.get("fact_type", "plot")).strip() or "plot", "content": str(item["content"]).strip()})
-        elif str(item).strip():
-            facts.append({"fact_type": "plot", "content": str(item).strip()})
-
-    warnings = normalized.get("extraction_warnings") if isinstance(normalized.get("extraction_warnings"), list) else []
-    if key_events and not timelines:
-        for event in key_events[:8]:
-            year = re.search(r"(?:19|20)\d{2}(?:年)?", event)
-            timelines.append({"time_description": year.group(0) if year else f"第{chapter.sequence}章", "location": "待确定", "content": event, "participants": ""})
-        warnings.append("模型未返回时间线，系统已依据关键事件生成可编辑的时间线草稿。")
-    if key_events and not facts:
-        facts = [{"fact_type": "plot", "content": event} for event in key_events[:8]]
-        warnings.append("模型未返回事实，系统已依据关键事件生成可编辑的剧情事实草稿。")
-    normalized["key_events"] = key_events
-    normalized["timeline_events"] = timelines
-    normalized["facts"] = facts
-    normalized["extraction_warnings"] = warnings
-    return normalized
 
 def save_outline_snapshot(db: Session, novel: models.Novel, reason: str):
     if novel.master_outline:
@@ -374,7 +338,7 @@ async def improve_outline(novel_id: int, data: schemas.ImproveOutlineRequest, db
 【当前完整大纲】{novel.master_outline or '暂无'}
 【已有章节与锁定状态】\n{chapter_state or '暂无'}
 【用户最新改进要求】{data.improvement_request}
-请提出改进预览，绝不能直接覆盖数据库。已确认章节或已有正文的剧情是既成事实，默认仅优化后续草稿章节；若确实建议修改已确认章节，必须放入 warnings 并说明影响原因。返回 JSON：{{"change_summary":"...","reasoning_summary":"...","affected_chapters":[1],"warnings":["..."],"outline":{{"title":"...","content":"改进后的完整总纲","chapters":[{{"chapter_number":1,"title":"...","outline":"...","change_type":"modified|unchanged|new"}}]}}}}。"""
+请提出改进预览，注意你返回的是大纲而不是正式的正文内容，应该做到简练、概括、概念化。绝不能直接覆盖数据库。已确认章节或已有正文的剧情是既成事实，默认仅优化后续草稿章节；若确实建议修改已确认章节，必须放入 warnings 并说明影响原因。返回 JSON：{{"change_summary":"...","reasoning_summary":"...","affected_chapters":[1],"warnings":["..."],"outline":{{"title":"...","content":"改进后的完整总纲","chapters":[{{"chapter_number":1,"title":"...","outline":"...","change_type":"modified|unchanged|new"}}]}}}}。"""
     return await json_job(db, novel, "improve_outline", prompt, params=data.model_dump())
 
 @app.post("/api/novels/{novel_id}/ai/apply-outline-improvement")
@@ -518,7 +482,6 @@ async def confirm_chapter(novel_id: int, chapter_id: int, payload: dict | None =
         response = await json_job(db, novel, "extract_memory", prompt, chapter.id)
         data = response["result"]
     if not isinstance(data, dict): raise HTTPException(502, "记忆提取结果格式不正确，请重试")
-    data = normalize_memory_extraction(data, chapter)
     def entries(value): return value if isinstance(value, list) else []
     def joined(value): return "\n".join(str(item) for item in entries(value))
     mode = str((payload or {}).get("mode", "apply"))
@@ -566,7 +529,6 @@ async def confirm_chapter(novel_id: int, chapter_id: int, payload: dict | None =
                 "summary": str(data.get("summary", "")),
                 "timeline_events": entries(data.get("timeline_events")),
                 "facts": entries(data.get("facts")),
-                "warnings": entries(data.get("extraction_warnings")),
                 "timeline_count": len(entries(data.get("timeline_events"))),
                 "fact_count": len(entries(data.get("facts"))),
             },
